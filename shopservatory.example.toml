@@ -1,0 +1,43 @@
+[server]
+listen = "127.0.0.1:8080"
+base_url = "http://localhost:8080"
+
+[database]
+path = "shopservatory.db"
+
+[log]
+level = "info"
+
+[user]
+name = "admin"
+email = "admin@localhost"
+
+[scrape]
+user_agent = "Mozilla/5.0 (X11; Linux x86_64) shopservatory/0.1"
+default_interval = "5m"
+timeout = "30s"
+# Optional outbound proxy, e.g. for region-locked sources
+# proxy_url = "http://127.0.0.1:8888"
+
+# Path to a Chromium/Chrome binary. Required for the bot-protected sources.
+# Can also be set via SHOPSERVATORY_CHROMIUM.
+# browser_path = "/run/current-system/sw/bin/chromium"
+browser_timeout = "45s"
+flaresolverr_timeout = "60s"
+
+[currency]
+target = "EUR"
+
+
+[ebay]
+# Get credentials from https://developer.ebay.com (Browse API, production keys).
+# Prefer SHOPSERVATORY_EBAY_CLIENT_ID / _SECRET in the environment.
+# client_id = ""
+# client_secret = ""
+marketplace = "EBAY_US" # e.g. EBAY_DE, EBAY_AT
+
+[telegram]
+# Create a bot via @BotFather; prefer SHOPSERVATORY_TELEGRAM_TOKEN in the env.
+# token = ""
+# If set, a notification target is auto-created for the default user.
+# chat_id = ""

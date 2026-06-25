@@ -1,0 +1,11 @@
+/result
+/result-*
+.pre-commit-config.yaml
+.direnv
+/shopservatory
+*.db
+*.db-shm
+*.db-wal
+shopservatory.toml
+.envrc
+/data
