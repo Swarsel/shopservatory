@@ -102,6 +102,46 @@ func TestMercariDPoP(t *testing.T) {
 	}
 }
 
+func TestKleinanzeigenURL(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name string
+		spec SearchSpec
+		want string
+	}{
+		{"keyword", SearchSpec{Query: "murakami"}, "https://www.kleinanzeigen.de/s-murakami/k0"},
+		{"multiword", SearchSpec{Query: "Louis Vuitton"}, "https://www.kleinanzeigen.de/s-louis-vuitton/k0"},
+		{"range", SearchSpec{Query: "murakami", MinPrice: f(5), MaxPrice: f(15)}, "https://www.kleinanzeigen.de/s-preis:5:15/murakami/k0"},
+		{"min only", SearchSpec{Query: "murakami", MinPrice: f(5)}, "https://www.kleinanzeigen.de/s-preis:5:/murakami/k0"},
+		{"max only", SearchSpec{Query: "murakami", MaxPrice: f(15)}, "https://www.kleinanzeigen.de/s-preis::15/murakami/k0"},
+		{"full url", SearchSpec{Query: "https://www.kleinanzeigen.de/s-murakami/k0"}, "https://www.kleinanzeigen.de/s-murakami/k0"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := kleinanzeigenURL(c.spec); got != c.want {
+				t.Fatalf("kleinanzeigenURL(%v) = %q, want %q", c.spec, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseKleinanzeigenPrice(t *testing.T) {
+	cases := map[string]float64{
+		"10 €":           10,
+		"15 € VB":        15,
+		"1.234 €":        1234,
+		"VB":             0,
+		"Zu verschenken": 0,
+		"":               0,
+		"99,50 €":        99.5,
+	}
+	for in, want := range cases {
+		if got := parseKleinanzeigenPrice(in); got != want {
+			t.Fatalf("parseKleinanzeigenPrice(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }
