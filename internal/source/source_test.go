@@ -3,6 +3,7 @@ package source
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -140,6 +141,34 @@ func TestParseKleinanzeigenPrice(t *testing.T) {
 			t.Fatalf("parseKleinanzeigenPrice(%q) = %v, want %v", in, got, want)
 		}
 	}
+}
+
+func TestBazarURL(t *testing.T) {
+	t.Run("keyword", func(t *testing.T) {
+		u, err := url.Parse(bazarURL(SearchSpec{Query: "rolex"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Path != "/api/article/l/00-alle/h" {
+			t.Fatalf("path = %q", u.Path)
+		}
+		q := u.Query()
+		if q.Get("term") != "rolex" || q.Get("allShops") != "false" || q.Get("sort") != "sort.date,desc" {
+			t.Fatalf("query = %v", q)
+		}
+	})
+	t.Run("all_shops param", func(t *testing.T) {
+		u, _ := url.Parse(bazarURL(SearchSpec{Query: "rolex", Params: map[string]string{"all_shops": "true"}}))
+		if u.Query().Get("allShops") != "true" {
+			t.Fatalf("allShops = %q", u.Query().Get("allShops"))
+		}
+	})
+	t.Run("frontend url translated to api", func(t *testing.T) {
+		got := bazarURL(SearchSpec{Query: "https://www.bazar.at/l/00-alle/h?term=rolex&page=0&size=20&sort=sort.date,desc"})
+		if !strings.Contains(got, "/api/article/l/00-alle/h") || !strings.Contains(got, "term=rolex") {
+			t.Fatalf("got %q", got)
+		}
+	})
 }
 
 func TestEbayPriceFilter(t *testing.T) {
