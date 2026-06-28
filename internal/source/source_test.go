@@ -190,6 +190,95 @@ func TestShpockURL(t *testing.T) {
 	}
 }
 
+func TestCraigslistTarget(t *testing.T) {
+	cases := []struct {
+		name    string
+		spec    SearchSpec
+		sub, q  string
+		wantErr bool
+	}{
+		{"region param", SearchSpec{Query: "pokemon", Params: map[string]string{"region": "sfbay"}}, "sfbay", "pokemon", false},
+		{"no region", SearchSpec{Query: "pokemon"}, "", "", true},
+		{"legacy url", SearchSpec{Query: "https://sfbay.craigslist.org/search/sss?query=pokemon"}, "sfbay", "pokemon", false},
+		{"new url", SearchSpec{Query: "https://www.craigslist.org/search/area/newyork?query=rolex"}, "newyork", "rolex", false},
+		{"new url q param", SearchSpec{Query: "https://www.craigslist.org/search/area/seattle?q=bike"}, "seattle", "bike", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sub, q, err := clTarget(c.spec)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
+			}
+			if !c.wantErr && (sub != c.sub || q != c.q) {
+				t.Fatalf("got (%q,%q), want (%q,%q)", sub, q, c.sub, c.q)
+			}
+		})
+	}
+}
+
+func TestCraigslistURL(t *testing.T) {
+	got := clURL("sfbay", "sby", "tag", "san-jose-pokemon", 7942946311)
+	want := "https://sfbay.craigslist.org/sby/tag/d/san-jose-pokemon/7942946311.html"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if got := clURL("sfbay", "", "tag", "x", 1); got != "https://sfbay.craigslist.org/tag/d/x/1.html" {
+		t.Fatalf("no-subarea form: %q", got)
+	}
+	if got := clURL("sfbay", "sby", "", "", 1); got != "https://sfbay.craigslist.org" {
+		t.Fatalf("missing cat/slug should fall back to base: %q", got)
+	}
+}
+
+func TestCraigslistImage(t *testing.T) {
+	if got := clImage("3:00606_3AhkAUqtv1l_0CI0Bu"); got != "https://images.craigslist.org/00606_3AhkAUqtv1l_0CI0Bu_600x450.jpg" {
+		t.Fatalf("got %q", got)
+	}
+	if got := clImage(""); got != "" {
+		t.Fatalf("empty token should yield empty url, got %q", got)
+	}
+}
+
+func TestCraigslistPrice(t *testing.T) {
+	for in, want := range map[string]float64{"$99": 99, "$1,234": 1234, "": 0, "$10.50": 10.5} {
+		if got := clPrice(in); got != want {
+			t.Fatalf("clPrice(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestCraigslistDecode(t *testing.T) {
+	body := []byte(`{"data":{"items":[
+		[37348350,2638039,132,1,"1:1~37.3~-121.8","0CI0Bu",[13,"abc"],[4,"3:img_x"],[6,"san-jose-pokemon-vintage"],[10,"$25"],"Pokemon vintage"],
+		[1,2,96,1,"3:3:2~37.5~-121.9","0Cz0t2",[6,"fremont-switch"],[10,"$500"],"Nintendo Switch"]
+	],"decode":{"minPostingId":7905597961,"locations":[0,[1,"sfbay","sby"],[1,"sfbay","pen"],[1,"sfbay","eby"]]}}}`)
+	ls, err := clDecode(body, "sfbay", SearchSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ls) != 2 {
+		t.Fatalf("want 2 listings, got %d", len(ls))
+	}
+	a := ls[0]
+	if a.ExternalID != "7942946311" || a.Title != "Pokemon vintage" || a.Price != 25 || a.Currency != "USD" {
+		t.Fatalf("listing[0] = %+v", a)
+	}
+	if a.ImageURL != "https://images.craigslist.org/img_x_600x450.jpg" {
+		t.Fatalf("listing[0].ImageURL = %q", a.ImageURL)
+	}
+	if a.URL != "https://sfbay.craigslist.org/sby/tag/d/san-jose-pokemon-vintage/7942946311.html" {
+		t.Fatalf("listing[0].URL = %q", a.URL)
+	}
+	if ls[1].URL != "https://sfbay.craigslist.org/eby/ele/d/fremont-switch/7905597962.html" {
+		t.Fatalf("listing[1].URL = %q", ls[1].URL)
+	}
+	max := 100.0
+	ls, _ = clDecode(body, "sfbay", SearchSpec{MaxPrice: &max})
+	if len(ls) != 1 {
+		t.Fatalf("price filter: want 1, got %d", len(ls))
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }

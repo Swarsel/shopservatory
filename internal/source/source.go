@@ -141,6 +141,7 @@ func NewRegistry(cfg config.Config, client *Client, log *slog.Logger) *Registry 
 	r.add(newKleinanzeigen(client))
 	r.add(newBazar(client))
 	r.add(newShpock(client))
+	r.add(newCraigslist(client))
 
 	if cfg.Ebay.Configured() {
 		r.add(newEbay(client, cfg.Ebay, log))
