@@ -176,7 +176,7 @@ const pageTemplate = `<!doctype html>
       var c = el('div', 'card');
       var a = el('a'); a.href=item.url; a.target='_blank'; a.rel='noopener';
       if (item.imageUrl) {
-        var img = el('img'); img.src=item.imageUrl; img.loading='lazy'; img.alt='';
+        var img = el('img'); img.src='/img?u='+encodeURIComponent(item.imageUrl); img.loading='lazy'; img.alt='';
         img.onerror = function(){ if (img.parentNode) img.parentNode.replaceChild(el('div','noimg','no image'), img); };
         a.appendChild(img);
       } else {

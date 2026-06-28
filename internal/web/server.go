@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"html/template"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +27,7 @@ type Server struct {
 	log      *slog.Logger
 	userID   int64
 	tmpl     *template.Template
+	images   *http.Client
 }
 
 func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv *fx.Converter, log *slog.Logger, userID int64) *Server {
@@ -35,6 +39,7 @@ func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv
 		log:      log,
 		userID:   userID,
 		tmpl:     template.Must(template.New("page").Parse(pageTemplate)),
+		images:   &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -45,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /{$}", s.handleIndex)
+	mux.HandleFunc("GET /img", s.handleImageProxy)
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("POST /searches", s.handleCreate)
 	mux.HandleFunc("POST /searches/{id}/update", s.handleUpdate)
@@ -116,6 +122,66 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(stateData{Searches: searches, Listings: listings}); err != nil {
 		s.log.Error("web: encode state", "err", err)
 	}
+}
+
+const imageProxyUA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
+	target, ok := safeImageURL(r.URL.Query().Get("u"))
+	if !ok {
+		http.Error(w, "bad image url", http.StatusBadRequest)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	req.Header.Set("User-Agent", imageProxyUA)
+	req.Header.Set("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
+
+	resp, err := s.images.Do(req)
+	if err != nil {
+		http.Error(w, "fetch failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	ct := resp.Header.Get("Content-Type")
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(ct, "image/") {
+		http.Error(w, "not an image", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, 10<<20))
+}
+
+func safeImageURL(raw string) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return "", false
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return "", false
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return "", false
+		}
+	}
+	return u.String(), true
 }
 
 func (s *Server) searchViews(ctx context.Context) ([]searchView, error) {
