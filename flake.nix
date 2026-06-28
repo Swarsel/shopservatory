@@ -22,7 +22,7 @@
       mkShopservatory = pkgs: pkgs.buildGoModule {
         inherit pname version;
         src = inputs.self;
-        vendorHash = "sha256-hcdmcGhvRhLNgHLLfKB0/fgnb0015vSV1vQh3E++ZAY=";
+        vendorHash = "sha256-lkdXgY2zflU5WyifCURqGjc5B9N748L8/1jBEvbsDbk=";
         subPackages = [ "cmd/shopservatory" ];
         meta = {
           description = "Monitors second-hand shopping sites for new items and notifies you";
@@ -50,11 +50,22 @@
           };
         };
 
-        pre-commit.settings.hooks = {
-          treefmt.enable = true;
-          gotest.enable = true;
-          govet.enable = true;
-        };
+        pre-commit.settings.hooks =
+          let
+            pureGo = name: cmd: {
+              enable = true;
+              pass_filenames = false;
+              entry = pkgs.lib.mkForce (toString (pkgs.writeShellScript "shopservatory-${name}" ''
+                export CGO_ENABLED=0
+                exec ${pkgs.go}/bin/go ${cmd}
+              ''));
+            };
+          in
+          {
+            treefmt.enable = true;
+            gotest = pureGo "gotest" "test ./...";
+            govet = pureGo "govet" "vet ./...";
+          };
 
         packages = rec {
           shopservatory = mkShopservatory pkgs;
@@ -73,6 +84,7 @@
             flaresolverr
           ];
           SHOPSERVATORY_CHROMIUM = pkgs.lib.getExe pkgs.chromium;
+          CGO_ENABLED = "0";
           shellHook = config.pre-commit.installationScript;
         };
       };
