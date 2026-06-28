@@ -171,6 +171,25 @@ func TestBazarURL(t *testing.T) {
 	})
 }
 
+func TestShpockURL(t *testing.T) {
+	cases := []struct {
+		name string
+		spec SearchSpec
+		want string
+	}{
+		{"keyword", SearchSpec{Query: "pokemon"}, "https://www.shpock.com/de-at/results?q=pokemon"},
+		{"locale param", SearchSpec{Query: "pokemon", Params: map[string]string{"locale": "de-de"}}, "https://www.shpock.com/de-de/results?q=pokemon"},
+		{"full url", SearchSpec{Query: "https://www.shpock.com/de-at/results?q=pokemon"}, "https://www.shpock.com/de-at/results?q=pokemon"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shpockURL(c.spec); got != c.want {
+				t.Fatalf("shpockURL(%v) = %q, want %q", c.spec, got, c.want)
+			}
+		})
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }
