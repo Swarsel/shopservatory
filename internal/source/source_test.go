@@ -279,6 +279,50 @@ func TestCraigslistDecode(t *testing.T) {
 	}
 }
 
+func TestAbsoluteURL(t *testing.T) {
+	cases := []struct{ base, ref, want string }{
+		{"https://x.com", "/a/b", "https://x.com/a/b"},
+		{"https://x.com", "a/b", "https://x.com/a/b"},
+		{"https://x.com", "https://other.com/p", "https://other.com/p"},
+		{"https://x.com", "//cdn.com/p.jpg", "https://cdn.com/p.jpg"},
+		{"https://x.com", "", ""},
+	}
+	for _, c := range cases {
+		if got := absoluteURL(c.base, c.ref); got != c.want {
+			t.Fatalf("absoluteURL(%q,%q) = %q, want %q", c.base, c.ref, got, c.want)
+		}
+	}
+}
+
+func TestLastPathSegment(t *testing.T) {
+	cases := map[string]string{
+		"/a/b/123":            "123",
+		"/a/b/123?x=1#frag":   "123",
+		"https://x.com/i/abc": "abc",
+		"":                    "",
+	}
+	for in, want := range cases {
+		if got := lastPathSegment(in); got != want {
+			t.Fatalf("lastPathSegment(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+	if got := firstNonEmpty("", "  ", "x", "y"); got != "x" {
+		t.Fatalf("got %q", got)
+	}
+	if got := firstNonEmpty("", "  "); got != "" {
+		t.Fatalf("all-empty should yield empty, got %q", got)
+	}
+}
+
+func TestCollapseSpaces(t *testing.T) {
+	if got := collapseSpaces("  a \n b\t c  "); got != "a b c" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }

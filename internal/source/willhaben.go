@@ -71,18 +71,13 @@ func (w *willhaben) Search(ctx context.Context, spec SearchSpec) ([]Listing, err
 		if !withinPriceBounds(spec, price) {
 			continue
 		}
-		seoURL := a.attr("SEO_URL")
-		link := seoURL
-		if seoURL != "" && !strings.HasPrefix(seoURL, "http") {
-			link = "https://www.willhaben.at/iad/" + strings.TrimPrefix(seoURL, "/")
-		}
 		image := firstField(a.attr("ALL_IMAGE_URLS"), "https://cache.willhaben.at/mmo/")
 		listings = append(listings, Listing{
 			ExternalID: a.ID,
 			Title:      a.Description,
 			Price:      price,
 			Currency:   "EUR",
-			URL:        link,
+			URL:        absoluteURL("https://www.willhaben.at/iad", a.attr("SEO_URL")),
 			ImageURL:   image,
 			Extra: map[string]string{
 				"location": a.attr("LOCATION"),

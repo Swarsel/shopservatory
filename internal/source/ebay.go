@@ -182,10 +182,3 @@ func (e *ebay) accessToken(ctx context.Context) (string, error) {
 	e.tokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn-60) * time.Second)
 	return e.token, nil
 }
-
-func truncate(b []byte, n int) string {
-	if len(b) <= n {
-		return string(b)
-	}
-	return string(b[:n]) + "..."
-}

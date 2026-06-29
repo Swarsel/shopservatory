@@ -60,17 +60,13 @@ func (k *kleinanzeigen) Search(ctx context.Context, spec SearchSpec) ([]Listing,
 		}
 
 		href, _ := sel.Attr("data-href")
-		link := href
-		if href != "" && !strings.HasPrefix(href, "http") {
-			link = "https://www.kleinanzeigen.de" + href
-		}
 
 		listings = append(listings, Listing{
 			ExternalID: id,
 			Title:      title,
 			Price:      price,
 			Currency:   "EUR",
-			URL:        link,
+			URL:        absoluteURL("https://www.kleinanzeigen.de", href),
 			ImageURL:   ld.ContentURL,
 			Extra: map[string]string{
 				"location": collapseSpaces(sel.Find(".aditem-main--top--left").First().Text()),
@@ -114,8 +110,4 @@ func parseKleinanzeigenPrice(s string) float64 {
 	}
 	v, _ := strconv.ParseFloat(t, 64)
 	return v
-}
-
-func collapseSpaces(s string) string {
-	return strings.Join(strings.Fields(s), " ")
 }

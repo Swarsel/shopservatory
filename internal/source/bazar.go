@@ -45,17 +45,13 @@ func (b *bazar) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) 
 		if !withinPriceBounds(spec, price) {
 			continue
 		}
-		link := it.Path
-		if it.Path != "" && !strings.HasPrefix(it.Path, "http") {
-			link = "https://www.bazar.at" + it.Path
-		}
 		listed, _ := time.Parse(time.RFC3339, it.MetaInformation.Created)
 		listings = append(listings, Listing{
 			ExternalID: strconv.FormatInt(it.ID, 10),
 			Title:      it.Common.Title,
 			Price:      price,
 			Currency:   "EUR",
-			URL:        link,
+			URL:        absoluteURL("https://www.bazar.at", it.Path),
 			ImageURL:   it.Image.Link,
 			ListedAt:   listed,
 			Extra: map[string]string{

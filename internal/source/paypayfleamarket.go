@@ -56,7 +56,7 @@ func (p *payPayFleaMarket) searchBuyee(ctx context.Context, spec SearchSpec) ([]
 
 	doc.Find("a[href*='/paypayfleamarket/item/']").Each(func(_ int, link *goquery.Selection) {
 		href, _ := link.Attr("href")
-		id := surugayaID(href)
+		id := lastPathSegment(href)
 		if id == "" || seen[id] {
 			return
 		}
@@ -122,7 +122,7 @@ func (p *payPayFleaMarket) searchDirect(ctx context.Context, spec SearchSpec) ([
 			return
 		}
 		listings = append(listings, Listing{
-			ExternalID: surugayaID(href),
+			ExternalID: lastPathSegment(href),
 			Title:      title,
 			Currency:   "JPY",
 			URL:        absoluteURL("https://paypayfleamarket.yahoo.co.jp", href),

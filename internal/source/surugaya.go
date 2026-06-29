@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,8 +21,6 @@ func newSurugaya(client *Client) *surugaya { return &surugaya{client: client} }
 
 func (s *surugaya) ID() string          { return "surugaya" }
 func (s *surugaya) DisplayName() string { return "Suruga-ya" }
-
-var nonDigits = regexp.MustCompile(`[^0-9]`)
 
 func (s *surugaya) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	q := url.Values{}
@@ -77,7 +74,7 @@ func (s *surugaya) Search(ctx context.Context, spec SearchSpec) ([]Listing, erro
 		if href == "" {
 			return
 		}
-		id := surugayaID(href)
+		id := lastPathSegment(href)
 		if id == "" || seen[id] {
 			return
 		}
@@ -117,38 +114,4 @@ func surugayaImageURL(id string) string {
 	}
 	lid := strings.ToLower(id)
 	return "https://cdn.suruga-ya.jp/pics_webp/boxart_m/" + lid + "m.jpg.webp"
-}
-
-func surugayaID(href string) string {
-	parts := strings.Split(strings.Trim(href, "/"), "/")
-	if len(parts) == 0 {
-		return href
-	}
-	last := parts[len(parts)-1]
-	if i := strings.IndexAny(last, "?#"); i >= 0 {
-		last = last[:i]
-	}
-	return last
-}
-
-func absoluteURL(base, ref string) string {
-	if ref == "" {
-		return ""
-	}
-	if strings.HasPrefix(ref, "http") {
-		return ref
-	}
-	if strings.HasPrefix(ref, "//") {
-		return "https:" + ref
-	}
-	return base + "/" + strings.TrimPrefix(ref, "/")
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }
