@@ -339,6 +339,16 @@ func TestAuctionFromURL(t *testing.T) {
 	}
 }
 
+func TestJmtyURL(t *testing.T) {
+	if got := jmtyURL(SearchSpec{Query: "rolex"}); got != "https://jmty.jp/all/sale?keyword=rolex" {
+		t.Fatalf("keyword: %q", got)
+	}
+	full := "https://jmty.jp/tokyo/sale?keyword=rolex"
+	if got := jmtyURL(SearchSpec{Query: full}); got != full {
+		t.Fatalf("full url: %q", got)
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }
