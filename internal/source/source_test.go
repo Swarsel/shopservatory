@@ -349,6 +349,17 @@ func TestJmtyURL(t *testing.T) {
 	}
 }
 
+func TestMagiURL(t *testing.T) {
+	got := magiURL(SearchSpec{Query: "murakami"})
+	if !strings.Contains(got, "en.magi.camp/items/search") || !strings.Contains(got, "forms_search_items%5Bkeyword%5D=murakami") {
+		t.Fatalf("keyword: %q", got)
+	}
+	full := "https://en.magi.camp/items/1704035668"
+	if got := magiURL(SearchSpec{Query: full}); got != full {
+		t.Fatalf("full url: %q", got)
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }
