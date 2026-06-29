@@ -21,19 +21,24 @@ import (
 )
 
 type Server struct {
-	store    *store.Store
-	registry *source.Registry
-	sched    *scheduler.Scheduler
-	fx       *fx.Converter
-	auth     *auth.Authenticator
-	log      *slog.Logger
-	tmpl     *template.Template
-	images   *http.Client
+	store     *store.Store
+	registry  *source.Registry
+	sched     *scheduler.Scheduler
+	fx        *fx.Converter
+	auth      *auth.Authenticator
+	log       *slog.Logger
+	tmpl      *template.Template
+	loginTmpl *template.Template
+	images    *http.Client
 
+	searchInterval  time.Duration
 	monitorInterval time.Duration
 }
 
-func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv *fx.Converter, authn *auth.Authenticator, monitorInterval time.Duration, log *slog.Logger) *Server {
+func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv *fx.Converter, authn *auth.Authenticator, searchInterval, monitorInterval time.Duration, log *slog.Logger) *Server {
+	if searchInterval <= 0 {
+		searchInterval = 5 * time.Minute
+	}
 	if monitorInterval <= 0 {
 		monitorInterval = time.Hour
 	}
@@ -45,9 +50,25 @@ func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv
 		auth:            authn,
 		log:             log,
 		tmpl:            template.Must(template.New("page").Parse(pageTemplate)),
+		loginTmpl:       template.Must(template.New("login").Parse(loginTemplate)),
 		images:          &http.Client{Timeout: 15 * time.Second},
+		searchInterval:  searchInterval,
 		monitorInterval: monitorInterval,
 	}
+}
+
+func (s *Server) searchDefault(ctx context.Context, userID int64) time.Duration {
+	if st, err := s.store.UserSettings(ctx, userID); err == nil && st.SearchInterval > 0 {
+		return st.SearchInterval
+	}
+	return s.searchInterval
+}
+
+func (s *Server) monitorDefault(ctx context.Context, userID int64) time.Duration {
+	if st, err := s.store.UserSettings(ctx, userID); err == nil && st.MonitorInterval > 0 {
+		return st.MonitorInterval
+	}
+	return s.monitorInterval
 }
 
 func (s *Server) Handler() http.Handler {
@@ -56,7 +77,13 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	b := s.auth.BrowserAuth
+	mux.HandleFunc("GET /login", s.handleLoginPage)
+	mux.HandleFunc("POST /login", s.handleLogin)
+	mux.HandleFunc("POST /logout", s.handleLogout)
+	mux.HandleFunc("GET /auth/oidc", s.handleOIDCStart)
+	mux.HandleFunc("GET /auth/callback", s.handleOIDCCallback)
+
+	b := s.auth.RequireSession
 	mux.Handle("GET /{$}", b(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("GET /img", b(http.HandlerFunc(s.handleImageProxy)))
 	mux.Handle("GET /api/state", b(http.HandlerFunc(s.handleState)))
@@ -69,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /monitors/{id}/update", b(http.HandlerFunc(s.handleUpdateMonitor)))
 	mux.Handle("POST /monitors/{id}/delete", b(http.HandlerFunc(s.handleDeleteMonitor)))
 	mux.Handle("POST /monitors/{id}/run", b(http.HandlerFunc(s.handleRunMonitor)))
+	mux.Handle("POST /settings", b(http.HandlerFunc(s.handleSettings)))
 
 	a := s.auth.APIAuth
 	mux.Handle("GET /api/v1/me", a(http.HandlerFunc(s.handleAPIMe)))
@@ -79,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/searches/{id}/delete", a(http.HandlerFunc(s.handleDelete)))
 	mux.Handle("POST /api/v1/searches/{id}/toggle", a(http.HandlerFunc(s.handleToggle)))
 	mux.Handle("POST /api/v1/searches/{id}/run", a(http.HandlerFunc(s.handleRun)))
+	mux.Handle("POST /api/v1/settings", a(http.HandlerFunc(s.handleSettings)))
 	return mux
 }
 
@@ -121,10 +150,12 @@ type stateData struct {
 	Searches []searchView  `json:"searches"`
 	Listings []listingView `json:"listings"`
 	Monitors []monitorView `json:"monitors"`
+	Settings settingsView  `json:"settings"`
 }
 
-func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
-	data := indexData{Now: time.Now(), Currency: s.fx.Target()}
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	target := s.fx.Resolve(s.store.UserCurrency(r.Context(), auth.UserID(r.Context())))
+	data := indexData{Now: time.Now(), Currency: target}
 	for _, src := range s.registry.All() {
 		data.Sources = append(data.Sources, sourceOption{ID: src.ID(), Name: src.DisplayName()})
 	}
@@ -136,6 +167,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserID(r.Context())
+	settings, _ := s.store.UserSettings(r.Context(), userID)
+	target := s.fx.Resolve(settings.Currency)
+
 	searches, err := s.searchViews(r.Context(), userID)
 	if err != nil {
 		s.fail(w, "list searches", err)
@@ -145,20 +179,70 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("all") == "1" {
 		limit = 1000000
 	}
-	listings, err := s.recentListingViews(r.Context(), userID, limit)
+	listings, err := s.recentListingViews(r.Context(), userID, limit, target)
 	if err != nil {
 		s.fail(w, "recent listings", err)
 		return
 	}
-	monitors, err := s.monitorViews(r.Context(), userID)
+	monitors, err := s.monitorViews(r.Context(), userID, target)
 	if err != nil {
 		s.fail(w, "list monitors", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(stateData{Searches: searches, Listings: listings, Monitors: monitors}); err != nil {
+	out := stateData{Searches: searches, Listings: listings, Monitors: monitors, Settings: settingsView{
+		Currency:        settings.Currency,
+		SearchInterval:  durStr(settings.SearchInterval),
+		MonitorInterval: durStr(settings.MonitorInterval),
+		TelegramChatID:  settings.TelegramChatID,
+	}}
+	if err := json.NewEncoder(w).Encode(out); err != nil {
 		s.log.Error("web: encode state", "err", err)
 	}
+}
+
+type settingsView struct {
+	Currency        string `json:"currency"`
+	SearchInterval  string `json:"searchInterval"`
+	MonitorInterval string `json:"monitorInterval"`
+	TelegramChatID  string `json:"telegramChatId"`
+}
+
+func durStr(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return d.String()
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserID(r.Context())
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, errBadForm.Error(), http.StatusBadRequest)
+		return
+	}
+	parseDur := func(v string) time.Duration {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return 0
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return 0
+		}
+		return d
+	}
+	currency := strings.ToUpper(strings.TrimSpace(r.FormValue("currency")))
+	if err := s.store.UpdateUserSettings(r.Context(), userID, currency,
+		parseDur(r.FormValue("search_interval")), parseDur(r.FormValue("monitor_interval"))); err != nil {
+		s.fail(w, "update settings", err)
+		return
+	}
+	if err := s.store.SetTelegramChatID(r.Context(), userID, r.FormValue("telegram_chat_id")); err != nil {
+		s.fail(w, "update telegram", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 const imageProxyUA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
@@ -254,7 +338,7 @@ func (s *Server) searchViews(ctx context.Context, userID int64) ([]searchView, e
 	return out, nil
 }
 
-func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int) ([]listingView, error) {
+func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int, target string) ([]listingView, error) {
 	listings, err := s.store.RecentListings(ctx, userID, limit)
 	if err != nil {
 		return nil, err
@@ -272,7 +356,7 @@ func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int
 			Price:       priceString(l.Price, l.Currency),
 			PriceValue:  l.Price,
 			Currency:    l.Currency,
-			PriceApprox: s.fx.Format(l.Price, l.Currency),
+			PriceApprox: s.fx.FormatFor(l.Price, l.Currency, target),
 			Seen:        when.Format("2006-01-02 15:04"),
 		})
 	}
@@ -451,7 +535,7 @@ func (s *Server) parseSearchJSON(r *http.Request) (store.Search, error) {
 	if in.Query == "" {
 		return store.Search{}, errQueryRequired
 	}
-	interval := 5 * time.Minute
+	interval := s.searchDefault(r.Context(), auth.UserID(r.Context()))
 	if in.Interval != "" {
 		if d, err := time.ParseDuration(in.Interval); err == nil {
 			interval = d
@@ -485,7 +569,7 @@ func (s *Server) parseCommonForm(r *http.Request) (store.Search, error) {
 	if query == "" {
 		return store.Search{}, errQueryRequired
 	}
-	interval := 5 * time.Minute
+	interval := s.searchDefault(r.Context(), auth.UserID(r.Context()))
 	if v := strings.TrimSpace(r.FormValue("interval")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			interval = d

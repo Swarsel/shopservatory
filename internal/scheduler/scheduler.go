@@ -201,8 +201,9 @@ func (s *Scheduler) pollMonitor(ctx context.Context, m store.MonitoredItem) {
 		title = snap.Title
 	}
 	s.notifier.Dispatch(ctx, targets, notify.Event{
-		Source: src.DisplayName(),
-		Note:   note,
+		Source:       src.DisplayName(),
+		Note:         note,
+		UserCurrency: s.store.UserCurrency(ctx, m.UserID),
 		Listing: store.Listing{
 			Title: title, URL: m.URL, ImageURL: image, Price: snap.Price, Currency: currency,
 		},
@@ -273,10 +274,12 @@ func (s *Scheduler) poll(ctx context.Context, se store.Search) {
 	}
 
 	var targets []store.NotificationTarget
+	var userCurrency string
 	if !firstRun {
 		if targets, err = s.store.ListTargets(ctx, se.UserID); err != nil {
 			s.log.Error("scheduler: list targets", "search", se.ID, "err", err)
 		}
+		userCurrency = s.store.UserCurrency(ctx, se.UserID)
 	}
 
 	seenAt := time.Now()
@@ -295,9 +298,10 @@ func (s *Scheduler) poll(ctx context.Context, se store.Search) {
 			continue
 		}
 		s.notifier.Dispatch(ctx, targets, notify.Event{
-			Search:  se,
-			Source:  src.DisplayName(),
-			Listing: stored,
+			Search:       se,
+			Source:       src.DisplayName(),
+			Listing:      stored,
+			UserCurrency: userCurrency,
 		})
 		if err := s.store.MarkNotified(ctx, stored.ID); err != nil {
 			s.log.Error("scheduler: mark notified", "listing", stored.ID, "err", err)

@@ -40,11 +40,16 @@ in
       description = ''
         Path to an EnvironmentFile holding secrets.
 
-        Available variables:
+        Recognised variables:
           SHOPSERVATORY_TELEGRAM_TOKEN
-          SHOPSERVATORY_TELEGRAM_CHAT_ID
           SHOPSERVATORY_EBAY_CLIENT_ID
           SHOPSERVATORY_EBAY_CLIENT_SECRET
+          SHOPSERVATORY_OIDC_CLIENT_SECRET
+          SHOPSERVATORY_USER_<NAME>_PASSWORD
+          SHOPSERVATORY_USER_<NAME>_CHAT_ID
+
+        <NAME> is the account's name upper-cased with non-alphanumerics
+        replaced by "_" (e.g. name = "admin" -> SHOPSERVATORY_USER_ADMIN_PASSWORD).
       '';
     };
 

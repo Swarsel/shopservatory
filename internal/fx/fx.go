@@ -12,32 +12,37 @@ import (
 	"time"
 )
 
+const base = "EUR"
+
 type Converter struct {
-	target string
-	http   *http.Client
-	log    *slog.Logger
+	defaultTarget string
+	http          *http.Client
+	log           *slog.Logger
 
 	mu    sync.RWMutex
 	rates map[string]float64
 }
 
-func New(target string, log *slog.Logger) *Converter {
+func New(defaultTarget string, log *slog.Logger) *Converter {
 	return &Converter{
-		target: strings.ToUpper(strings.TrimSpace(target)),
-		http:   &http.Client{Timeout: 15 * time.Second},
-		log:    log,
-		rates:  map[string]float64{},
+		defaultTarget: strings.ToUpper(strings.TrimSpace(defaultTarget)),
+		http:          &http.Client{Timeout: 15 * time.Second},
+		log:           log,
+		rates:         map[string]float64{},
 	}
 }
 
-func (c *Converter) Target() string { return c.target }
+func (c *Converter) DefaultTarget() string { return c.defaultTarget }
 
-func (c *Converter) Enabled() bool { return c.target != "" }
+func (c *Converter) Resolve(userCurrency string) string {
+	userCurrency = strings.ToUpper(strings.TrimSpace(userCurrency))
+	if userCurrency != "" {
+		return userCurrency
+	}
+	return c.defaultTarget
+}
 
 func (c *Converter) Run(ctx context.Context) {
-	if !c.Enabled() {
-		return
-	}
 	if err := c.refresh(ctx); err != nil {
 		c.log.Warn("fx: initial rate fetch failed; conversions unavailable for now", "err", err)
 	}
@@ -56,8 +61,7 @@ func (c *Converter) Run(ctx context.Context) {
 }
 
 func (c *Converter) refresh(ctx context.Context) error {
-	url := "https://api.frankfurter.dev/v1/latest?base=" + c.target
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.frankfurter.dev/v1/latest?base="+base, nil)
 	if err != nil {
 		return err
 	}
@@ -71,7 +75,6 @@ func (c *Converter) refresh(ctx context.Context) error {
 		return fmt.Errorf("status %s", resp.Status)
 	}
 	var out struct {
-		Base  string             `json:"base"`
 		Rates map[string]float64 `json:"rates"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -80,39 +83,42 @@ func (c *Converter) refresh(ctx context.Context) error {
 	if len(out.Rates) == 0 {
 		return fmt.Errorf("no rates returned")
 	}
+	out.Rates[base] = 1
 	c.mu.Lock()
 	c.rates = out.Rates
 	c.mu.Unlock()
-	c.log.Info("fx: refreshed rates", "base", c.target, "currencies", len(out.Rates))
+	c.log.Info("fx: refreshed rates", "base", base, "currencies", len(out.Rates))
 	return nil
 }
 
-func (c *Converter) Convert(amount float64, currency string) (float64, bool) {
-	if !c.Enabled() {
+func (c *Converter) ConvertTo(amount float64, from, to string) (float64, bool) {
+	from = strings.ToUpper(strings.TrimSpace(from))
+	to = strings.ToUpper(strings.TrimSpace(to))
+	if from == "" || to == "" {
 		return 0, false
 	}
-	currency = strings.ToUpper(strings.TrimSpace(currency))
-	if currency == "" {
-		return 0, false
-	}
-	if currency == c.target {
+	if from == to {
 		return amount, true
 	}
 	c.mu.RLock()
-	rate := c.rates[currency]
+	rateFrom, rateTo := c.rates[from], c.rates[to]
 	c.mu.RUnlock()
-	if rate <= 0 {
+	if rateFrom <= 0 || rateTo <= 0 {
 		return 0, false
 	}
-	return amount / rate, true
+	return amount / rateFrom * rateTo, true
 }
 
-func (c *Converter) Format(amount float64, currency string) string {
-	v, ok := c.Convert(amount, currency)
-	if !ok || strings.EqualFold(currency, c.target) {
+func (c *Converter) FormatFor(amount float64, from, to string) string {
+	to = strings.ToUpper(strings.TrimSpace(to))
+	if to == "" || strings.EqualFold(from, to) {
 		return ""
 	}
-	return fmt.Sprintf("≈ %s%.0f", symbol(c.target), v)
+	v, ok := c.ConvertTo(amount, from, to)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("≈ %s%.0f", symbol(to), v)
 }
 
 func symbol(code string) string {

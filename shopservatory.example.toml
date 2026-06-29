@@ -8,15 +8,32 @@ path = "shopservatory.db"
 [log]
 level = "info"
 
-[user]
+# Login accounts. Each account may set its own currency, default search/monitor
+# intervals, and Telegram chat_id; anything omitted falls back to the global
+# defaults below ([currency], [scrape], [monitor]). These are seed values only —
+# once an account exists, changes made in the web UI take precedence and are not
+# overwritten on restart. Add more accounts by repeating [[users]].
+#
+# Secrets can come from the environment instead of this file, keyed by the
+# account name (upper-cased, non-alphanumerics -> "_"). For name = "admin":
+#   SHOPSERVATORY_USER_ADMIN_PASSWORD   (applied every start)
+#   SHOPSERVATORY_USER_ADMIN_CHAT_ID    (seed-only, like the file value)
+[[users]]
 name = "admin"
-email = "admin@localhost"
+email = "admin@example.com"
+password = "change-me"
+# currency = "EUR"
+# search_interval = "5m"
+# monitor_interval = "1h"
+# telegram_chat_id = ""
 
 [monitor]
+# Global default monitor interval (per-account override above; UI override too).
 default_interval = "1h"
 
 [scrape]
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) shopservatory/0.1"
+# Global default search interval (per-account override above; UI override too).
 default_interval = "5m"
 timeout = "30s"
 # Optional outbound proxy, e.g. for region-locked sources
@@ -29,8 +46,8 @@ browser_timeout = "45s"
 flaresolverr_timeout = "60s"
 
 [currency]
+# Global default display currency (per-account override above; UI override too).
 target = "EUR"
-
 
 [ebay]
 # Get credentials from https://developer.ebay.com (Browse API, production keys).
@@ -40,7 +57,14 @@ target = "EUR"
 marketplace = "EBAY_US" # e.g. EBAY_DE, EBAY_AT
 
 [telegram]
-# Create a bot via @BotFather; prefer SHOPSERVATORY_TELEGRAM_TOKEN in the env.
+# The shared bot token. Create a bot via @BotFather; prefer
+# SHOPSERVATORY_TELEGRAM_TOKEN in the env. Each account's chat_id is set in its
+# [[users]] block above (or in the web UI), not here.
 # token = ""
-# If set, a notification target is auto-created for the default user.
-# chat_id = ""
+
+[oidc]
+# Optional Prefer SHOPSERVATORY_OIDC_CLIENT_SECRET in the environment.
+# issuer = "https://idp.example.com/oauth2/openid/shopservatory"
+# client_id = "shopservatory"
+# client_secret = ""
+# name = "kanidm"

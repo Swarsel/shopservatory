@@ -18,14 +18,14 @@
     inputs:
     let
       pname = "shopservatory";
-      version = "0.2.0";
+      version = "0.3.0";
 
       mkShopservatory =
         pkgs:
         pkgs.buildGoModule {
           inherit pname version;
           src = inputs.self;
-          vendorHash = "sha256-lkdXgY2zflU5WyifCURqGjc5B9N748L8/1jBEvbsDbk=";
+          vendorHash = "sha256-PrmpcU+wy5+1FskcLNONXwbH5u3B/omKdOMK5TZ5d5k=";
           subPackages = [ "cmd/shopservatory" ];
           meta = {
             description = "Monitors second-hand shopping sites for new items and notifies you";
@@ -47,11 +47,10 @@
       ];
 
       perSystem =
-        {
-          config,
-          self',
-          pkgs,
-          ...
+        { config
+        , self'
+        , pkgs
+        , ...
         }:
         {
           treefmt = {

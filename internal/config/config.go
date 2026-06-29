@@ -3,22 +3,23 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 type Config struct {
-	Server   Server   `toml:"server"`
-	Database Database `toml:"database"`
-	Log      Log      `toml:"log"`
-	User     User     `toml:"user"`
-	Scrape   Scrape   `toml:"scrape"`
-	Ebay     Ebay     `toml:"ebay"`
-	Telegram Telegram `toml:"telegram"`
-	Currency Currency `toml:"currency"`
-	OIDC     OIDC     `toml:"oidc"`
-	Monitor  Monitor  `toml:"monitor"`
+	Server   Server    `toml:"server"`
+	Database Database  `toml:"database"`
+	Log      Log       `toml:"log"`
+	Users    []Account `toml:"users"`
+	Scrape   Scrape    `toml:"scrape"`
+	Ebay     Ebay      `toml:"ebay"`
+	Telegram Telegram  `toml:"telegram"`
+	Currency Currency  `toml:"currency"`
+	OIDC     OIDC      `toml:"oidc"`
+	Monitor  Monitor   `toml:"monitor"`
 }
 
 type Monitor struct {
@@ -26,19 +27,34 @@ type Monitor struct {
 }
 
 type OIDC struct {
-	Issuer   string `toml:"issuer"`
-	ClientID string `toml:"client_id"`
+	Issuer       string `toml:"issuer"`
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+	Name         string `toml:"name"`
 }
 
-func (o OIDC) Enabled() bool { return o.Issuer != "" }
+func (o OIDC) Enabled() bool { return o.Issuer != "" && o.ClientID != "" }
+
+func (o OIDC) Label() string {
+	if o.Name != "" {
+		return o.Name
+	}
+	return "SSO"
+}
 
 type Currency struct {
 	Target string `toml:"target"`
 }
 
-type User struct {
-	Name  string `toml:"name"`
-	Email string `toml:"email"`
+type Account struct {
+	Name     string `toml:"name"`
+	Email    string `toml:"email"`
+	Password string `toml:"password"`
+
+	Currency        string   `toml:"currency"`
+	SearchInterval  Duration `toml:"search_interval"`
+	MonitorInterval Duration `toml:"monitor_interval"`
+	TelegramChatID  string   `toml:"telegram_chat_id"`
 }
 
 type Server struct {
@@ -87,8 +103,7 @@ type Ebay struct {
 }
 
 type Telegram struct {
-	Token  string `toml:"token"`
-	ChatID string `toml:"chat_id"`
+	Token string `toml:"token"`
 }
 
 func (t Telegram) Enabled() bool { return t.Token != "" }
@@ -115,7 +130,6 @@ func Default() Config {
 		Server:   Server{Listen: "127.0.0.1:8080", ForwardedUserHeader: "X-Forwarded-Email"},
 		Database: Database{Path: "shopservatory.db"},
 		Log:      Log{Level: "info"},
-		User:     User{Name: "admin", Email: "admin@localhost"},
 		Scrape: Scrape{
 			UserAgent:           "Mozilla/5.0 (X11; Linux x86_64) shopservatory/0.1",
 			DefaultInterval:     Duration{5 * time.Minute},
@@ -151,9 +165,6 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SHOPSERVATORY_TELEGRAM_TOKEN"); v != "" {
 		cfg.Telegram.Token = v
 	}
-	if v := os.Getenv("SHOPSERVATORY_TELEGRAM_CHAT_ID"); v != "" {
-		cfg.Telegram.ChatID = v
-	}
 	if v := os.Getenv("SHOPSERVATORY_EBAY_CLIENT_ID"); v != "" {
 		cfg.Ebay.ClientID = v
 	}
@@ -178,6 +189,33 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SHOPSERVATORY_OIDC_CLIENT_ID"); v != "" {
 		cfg.OIDC.ClientID = v
 	}
+	if v := os.Getenv("SHOPSERVATORY_OIDC_CLIENT_SECRET"); v != "" {
+		cfg.OIDC.ClientSecret = v
+	}
+	for i := range cfg.Users {
+		key := envUserKey(cfg.Users[i].Name)
+		if key == "" {
+			continue
+		}
+		if v := os.Getenv("SHOPSERVATORY_USER_" + key + "_PASSWORD"); v != "" {
+			cfg.Users[i].Password = v
+		}
+		if v := os.Getenv("SHOPSERVATORY_USER_" + key + "_CHAT_ID"); v != "" {
+			cfg.Users[i].TelegramChatID = v
+		}
+	}
+}
+
+func envUserKey(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(name) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 func applyDefaults(cfg *Config) {
@@ -208,12 +246,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Ebay.Marketplace == "" {
 		cfg.Ebay.Marketplace = def.Ebay.Marketplace
-	}
-	if cfg.User.Name == "" {
-		cfg.User.Name = def.User.Name
-	}
-	if cfg.User.Email == "" {
-		cfg.User.Email = def.User.Email
 	}
 	if cfg.Server.ForwardedUserHeader == "" {
 		cfg.Server.ForwardedUserHeader = def.Server.ForwardedUserHeader

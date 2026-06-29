@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -56,17 +57,37 @@ func run() error {
 	}
 	defer st.Close()
 
-	user, err := st.EnsureDefaultUser(ctx, cfg.User.Name, cfg.User.Email)
-	if err != nil {
-		return fmt.Errorf("ensure default user: %w", err)
-	}
-	log.Info("default user", "id", user.ID, "email", user.Email)
-
-	if cfg.Telegram.Enabled() && cfg.Telegram.ChatID != "" {
-		if err := st.EnsureTelegramTarget(ctx, user.ID, cfg.Telegram.ChatID); err != nil {
-			return fmt.Errorf("provision telegram target: %w", err)
+	var apiFallbackID int64
+	for _, acc := range cfg.Users {
+		if acc.Email == "" || acc.Password == "" {
+			log.Warn("skipping seeded user without email/password", "email", acc.Email)
+			continue
 		}
-		log.Info("telegram target provisioned", "chat_id", cfg.Telegram.ChatID)
+		hash, herr := auth.HashPassword(acc.Password)
+		if herr != nil {
+			return fmt.Errorf("hash password for %q: %w", acc.Email, herr)
+		}
+		u, created, serr := st.SeedUser(ctx, acc.Name, strings.ToLower(acc.Email), hash)
+		if serr != nil {
+			return fmt.Errorf("seed user %q: %w", acc.Email, serr)
+		}
+		if apiFallbackID == 0 {
+			apiFallbackID = u.ID
+		}
+		if created {
+			if err := st.UpdateUserSettings(ctx, u.ID, acc.Currency, acc.SearchInterval.Duration, acc.MonitorInterval.Duration); err != nil {
+				return fmt.Errorf("seed settings for %q: %w", acc.Email, err)
+			}
+			if acc.TelegramChatID != "" {
+				if err := st.SetTelegramChatID(ctx, u.ID, acc.TelegramChatID); err != nil {
+					return fmt.Errorf("seed telegram for %q: %w", acc.Email, err)
+				}
+			}
+		}
+		log.Info("seeded login account", "id", u.ID, "email", u.Email, "created", created)
+	}
+	if apiFallbackID == 0 && !cfg.OIDC.Enabled() {
+		log.Warn("no login accounts configured and OIDC disabled: nobody can sign in (set [[users]] or [oidc])")
 	}
 
 	client, err := source.NewClient(cfg.Scrape, log)
@@ -78,9 +99,7 @@ func run() error {
 
 	conv := fx.New(cfg.Currency.Target, log)
 	go conv.Run(ctx)
-	if conv.Enabled() {
-		log.Info("currency conversion enabled", "target", conv.Target())
-	}
+	log.Info("currency conversion ready", "default_target", conv.DefaultTarget())
 
 	tg := notify.NewTelegram(cfg.Telegram.Token)
 	notifier := notify.NewManager(log, conv, tg)
@@ -92,17 +111,22 @@ func run() error {
 		DefaultInterval: cfg.Scrape.DefaultInterval.Duration,
 	})
 
-	authn, err := auth.New(ctx, st, cfg.OIDC.Issuer, cfg.OIDC.ClientID, cfg.Server.ForwardedUserHeader, user.ID, log)
+	authn, err := auth.New(ctx, st, auth.Options{
+		Issuer:        cfg.OIDC.Issuer,
+		ClientID:      cfg.OIDC.ClientID,
+		ClientSecret:  cfg.OIDC.ClientSecret,
+		OIDCName:      cfg.OIDC.Label(),
+		BaseURL:       cfg.Server.BaseURL,
+		DefaultUserID: apiFallbackID,
+	}, log)
 	if err != nil {
 		return fmt.Errorf("init auth: %w", err)
 	}
 	if authn.OIDCEnabled() {
-		log.Info("OIDC enabled", "issuer", cfg.OIDC.Issuer)
-	} else {
-		log.Warn("OIDC disabled: API and dashboard fall back to the default user")
+		log.Info("OIDC login enabled", "issuer", cfg.OIDC.Issuer)
 	}
 
-	srv := web.New(st, registry, sched, conv, authn, cfg.Monitor.DefaultInterval.Duration, log)
+	srv := web.New(st, registry, sched, conv, authn, cfg.Scrape.DefaultInterval.Duration, cfg.Monitor.DefaultInterval.Duration, log)
 
 	var wg sync.WaitGroup
 	wg.Add(2)

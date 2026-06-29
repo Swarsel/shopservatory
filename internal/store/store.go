@@ -37,12 +37,24 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) migrate(ctx context.Context) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS users (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT NOT NULL,
-    email        TEXT NOT NULL UNIQUE,
-    oidc_subject TEXT UNIQUE,
-    created_at   INTEGER NOT NULL
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                     TEXT NOT NULL,
+    email                    TEXT NOT NULL UNIQUE,
+    oidc_subject             TEXT UNIQUE,
+    password_hash            TEXT NOT NULL DEFAULT '',
+    currency                 TEXT NOT NULL DEFAULT '',
+    search_interval_seconds  INTEGER NOT NULL DEFAULT 0,
+    monitor_interval_seconds INTEGER NOT NULL DEFAULT 0,
+    created_at               INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
 CREATE TABLE IF NOT EXISTS searches (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +133,19 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 	if err := s.addColumnIfMissing(ctx, "listings", "listed_at", "INTEGER"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing(ctx, "listings", "sale_type", "TEXT NOT NULL DEFAULT ''")
+	if err := s.addColumnIfMissing(ctx, "listings", "sale_type", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "users", "password_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "users", "currency", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "users", "search_interval_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing(ctx, "users", "monitor_interval_seconds", "INTEGER NOT NULL DEFAULT 0")
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table, column, typ string) error {
@@ -396,25 +420,6 @@ func (s *Store) ListTargets(ctx context.Context, userID int64) ([]NotificationTa
 		out = append(out, t)
 	}
 	return out, rows.Err()
-}
-
-func (s *Store) EnsureTelegramTarget(ctx context.Context, userID int64, chatID string) error {
-	targets, err := s.ListTargets(ctx, userID)
-	if err != nil {
-		return err
-	}
-	for _, t := range targets {
-		if t.Kind == "telegram" && t.Config["chat_id"] == chatID {
-			return nil
-		}
-	}
-	_, err = s.CreateTarget(ctx, NotificationTarget{
-		UserID:  userID,
-		Kind:    "telegram",
-		Config:  map[string]string{"chat_id": chatID},
-		Enabled: true,
-	})
-	return err
 }
 
 func (s *Store) CreateTarget(ctx context.Context, t NotificationTarget) (int64, error) {

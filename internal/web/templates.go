@@ -25,6 +25,7 @@ const pageTemplate = `<!doctype html>
   label { display: block; margin: .4rem 0 .1rem; font-size: .85rem; }
   input, select, textarea { width: 100%; padding: .35rem; box-sizing: border-box; }
   .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: .6rem; }
+  .logout { position: absolute; top: 1.2rem; right: 1.2rem; margin: 0; }
   .feedbar { display: flex; gap: .5rem; align-items: center; margin: .3rem 0 .9rem; }
   .feedbar input { max-width: 320px; }
   .feedbar button { white-space: nowrap; }
@@ -48,6 +49,7 @@ const pageTemplate = `<!doctype html>
 </style>
 </head>
 <body>
+  <form method="post" action="/logout" class="logout"><button type="submit">log out</button></form>
   <h1>🔭 shopservatory</h1>
 
   <h2 id="form-title">New search</h2>
@@ -68,7 +70,7 @@ const pageTemplate = `<!doctype html>
         <div><label>Max price</label><input name="max_price" id="f-max" type="number" step="any" placeholder="optional"></div>
       </div>
       <div class="row">
-        <div><label>Interval</label><input name="interval" id="f-interval" value="5m" placeholder="e.g. 5m, 1h"></div>
+        <div><label>Interval</label><input name="interval" id="f-interval" placeholder="default (e.g. 5m, 1h)"></div>
         <div><label>Params (key=value per line)</label><textarea name="params" id="f-params" rows="2" placeholder="sort=newlyListed"></textarea></div>
       </div>
       <p>
@@ -92,15 +94,31 @@ const pageTemplate = `<!doctype html>
     <form id="monitor-form">
       <div class="feedbar">
         <input id="m-url" placeholder="paste an item URL to track its price…" autocomplete="off">
-        <input id="m-interval" placeholder="interval (e.g. 1h)" style="max-width:140px" autocomplete="off">
+        <input id="m-interval" placeholder="interval — default (e.g. 1h, 6h)" style="max-width:180px" autocomplete="off">
         <button type="submit">Monitor URL</button>
       </div>
     </form>
     <table>
-      <thead><tr><th></th><th>Source</th><th>Item</th><th>Price</th><th>Status</th><th>Every</th><th>Checked</th><th></th></tr></thead>
+      <thead><tr><th></th><th>Source</th><th>Item</th><th>Price</th><th>Status</th><th>Interval</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="monitors"></tbody>
     </table>
-    <p class="muted" id="monitors-empty" style="display:none">Nothing monitored yet — paste an item URL above, or click “📌 monitor” on a find.</p>
+    <p class="muted" id="monitors-empty" style="display:none">Nothing monitored yet — paste an item URL above, or click “monitor” on a find.</p>
+  </div>
+
+  <h2 class="fold-h" id="settings-head">▸ Settings</h2>
+  <div id="settings-section" style="display:none">
+    <form id="settings-form">
+      <div class="row">
+        <div><label>Display currency</label><input id="s-currency" placeholder="e.g. EUR, USD, JPY"></div>
+        <div><label>Default search interval</label><input id="s-search" placeholder="e.g. 5m, 1h"></div>
+        <div><label>Default monitor interval</label><input id="s-monitor" placeholder="e.g. 1h, 6h"></div>
+        <div><label>Telegram chat ID</label><input id="s-telegram" placeholder="optional"></div>
+      </div>
+      <div class="row">
+        <button type="submit">Save settings</button>
+        <span class="muted" id="settings-status" style="font-size:.8rem"></span>
+      </div>
+    </form>
   </div>
 
   <h2><span id="feed-label">Recent finds</span> <span class="muted" id="feed-status" style="font-size:.8rem;font-weight:normal"></span></h2>
@@ -138,7 +156,7 @@ const pageTemplate = `<!doctype html>
         exp.appendChild(t);
         tr.appendChild(exp);
         tr.appendChild(el('td', null, String(se.id)));
-        tr.appendChild(el('td', null, se.source));
+        tr.appendChild(el('td', null, sourceName(se.source)));
         var qcell = el('td', 'query', se.query.length > 70 ? se.query.slice(0, 70) + '…' : se.query);
         qcell.title = se.query;
         tr.appendChild(qcell);
@@ -193,7 +211,6 @@ const pageTemplate = `<!doctype html>
     function resetForm() {
       document.getElementById('form-title').textContent = 'New search';
       var f = document.getElementById('search-form'); f.reset(); f.action = '/searches';
-      document.getElementById('f-interval').value = '5m';
       document.getElementById('f-sources-hint').textContent = '(select one or more to create a search per source)';
       document.getElementById('f-submit').textContent = 'Add search';
       document.getElementById('f-cancel').style.display = 'none';
@@ -223,6 +240,44 @@ const pageTemplate = `<!doctype html>
         head.textContent = (open ? '▸' : '▾') + ' Monitoring';
       };
     })();
+
+    (function(){
+      var head = document.getElementById('settings-head');
+      head.onclick = function(){
+        var sec = document.getElementById('settings-section');
+        var open = sec.style.display !== 'none';
+        sec.style.display = open ? 'none' : '';
+        head.textContent = (open ? '▸' : '▾') + ' Settings';
+      };
+    })();
+
+    var settingsDirty = false;
+    ['s-currency','s-search','s-monitor','s-telegram'].forEach(function(id){
+      document.getElementById(id).addEventListener('input', function(){ settingsDirty = true; });
+    });
+    function renderSettings(st){
+      if (settingsDirty) return;
+      document.getElementById('s-currency').value = st.currency || '';
+      document.getElementById('s-search').value = st.searchInterval || '';
+      document.getElementById('s-monitor').value = st.monitorInterval || '';
+      document.getElementById('s-telegram').value = st.telegramChatId || '';
+    }
+    document.getElementById('settings-form').addEventListener('submit', function(e){
+      e.preventDefault();
+      var f = new URLSearchParams();
+      f.set('currency', document.getElementById('s-currency').value.trim());
+      f.set('search_interval', document.getElementById('s-search').value.trim());
+      f.set('monitor_interval', document.getElementById('s-monitor').value.trim());
+      f.set('telegram_chat_id', document.getElementById('s-telegram').value.trim());
+      var status = document.getElementById('settings-status');
+      status.textContent = 'saving…';
+      fetch('/settings', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
+        .then(function(r){
+          if (r.status===204 || r.ok) { settingsDirty = false; status.textContent = 'saved'; refresh(); }
+          else { status.textContent = 'could not save'; }
+        })
+        .catch(function(){ status.textContent = 'could not save'; });
+    });
 
     document.getElementById('monitor-form').addEventListener('submit', function(e){
       e.preventDefault();
@@ -348,7 +403,7 @@ const pageTemplate = `<!doctype html>
     function refresh() {
       return fetch('/api/state' + (showAll ? '?all=1' : ''), {headers:{'Accept':'application/json'}})
         .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
-        .then(function(s){ renderSearches(s.searches||[]); renderMonitors(s.monitors||[]); renderFeed(s.listings||[]); })
+        .then(function(s){ renderSearches(s.searches||[]); renderMonitors(s.monitors||[]); renderFeed(s.listings||[]); renderSettings(s.settings||{}); })
         .catch(function(){});
     }
 

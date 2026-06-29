@@ -9,11 +9,12 @@ import (
 )
 
 type Event struct {
-	Search      store.Search
-	Source      string
-	Listing     store.Listing
-	Note        string
-	PriceApprox string
+	Search       store.Search
+	Source       string
+	Listing      store.Listing
+	Note         string
+	PriceApprox  string
+	UserCurrency string
 }
 
 type Notifier interface {
@@ -23,7 +24,8 @@ type Notifier interface {
 }
 
 type RateConverter interface {
-	Format(amount float64, currency string) string
+	FormatFor(amount float64, from, to string) string
+	Resolve(userCurrency string) string
 }
 
 type Manager struct {
@@ -52,7 +54,7 @@ func (m *Manager) Kinds() []string {
 
 func (m *Manager) Dispatch(ctx context.Context, targets []store.NotificationTarget, ev Event) {
 	if m.fx != nil && ev.PriceApprox == "" {
-		ev.PriceApprox = m.fx.Format(ev.Listing.Price, ev.Listing.Currency)
+		ev.PriceApprox = m.fx.FormatFor(ev.Listing.Price, ev.Listing.Currency, m.fx.Resolve(ev.UserCurrency))
 	}
 	for _, t := range targets {
 		n, ok := m.notifiers[t.Kind]

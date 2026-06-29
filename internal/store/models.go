@@ -7,11 +7,12 @@ import (
 )
 
 type User struct {
-	ID          int64
-	Name        string
-	Email       string
-	OIDCSubject string
-	CreatedAt   time.Time
+	ID           int64
+	Name         string
+	Email        string
+	OIDCSubject  string
+	PasswordHash string
+	CreatedAt    time.Time
 }
 
 type Search struct {

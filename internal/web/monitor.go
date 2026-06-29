@@ -35,7 +35,7 @@ type pricePointView struct {
 	At     string  `json:"at"`
 }
 
-func (s *Server) monitorViews(ctx context.Context, userID int64) ([]monitorView, error) {
+func (s *Server) monitorViews(ctx context.Context, userID int64, target string) ([]monitorView, error) {
 	monitors, err := s.store.ListMonitors(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (s *Server) monitorViews(ctx context.Context, userID int64) ([]monitorView,
 		out = append(out, monitorView{
 			ID: m.ID, Source: m.Source, Title: m.Title, URL: m.URL, ImageURL: m.ImageURL,
 			Price:       priceString(m.LastPrice, m.Currency),
-			PriceApprox: s.fx.Format(m.LastPrice, m.Currency),
+			PriceApprox: s.fx.FormatFor(m.LastPrice, m.Currency, target),
 			Status:      m.Status, SaleType: m.SaleType, Interval: m.Interval.String(), LastChecked: checked, History: points,
 		})
 	}
@@ -84,7 +84,7 @@ func (s *Server) handleAddMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	interval := s.monitorInterval
+	interval := s.monitorDefault(r.Context(), auth.UserID(r.Context()))
 	if v := strings.TrimSpace(r.FormValue("interval")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			interval = d
