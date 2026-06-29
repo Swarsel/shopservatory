@@ -349,6 +349,18 @@ func TestJmtyURL(t *testing.T) {
 	}
 }
 
+func TestRakumaURL(t *testing.T) {
+	got := rakumaURL(SearchSpec{Query: "murakami"})
+	u, _ := url.Parse(got)
+	if u.Host != "fril.jp" || u.Query().Get("query") != "murakami" || u.Query().Get("transaction") != "selling" {
+		t.Fatalf("keyword: %q", got)
+	}
+	full := "https://item.fril.jp/abc123"
+	if got := rakumaURL(SearchSpec{Query: full}); got != full {
+		t.Fatalf("full url: %q", got)
+	}
+}
+
 func TestMagiURL(t *testing.T) {
 	got := magiURL(SearchSpec{Query: "murakami"})
 	if !strings.Contains(got, "en.magi.camp/items/search") || !strings.Contains(got, "forms_search_items%5Bkeyword%5D=murakami") {
