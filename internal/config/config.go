@@ -18,6 +18,11 @@ type Config struct {
 	Telegram Telegram `toml:"telegram"`
 	Currency Currency `toml:"currency"`
 	OIDC     OIDC     `toml:"oidc"`
+	Monitor  Monitor  `toml:"monitor"`
+}
+
+type Monitor struct {
+	DefaultInterval Duration `toml:"default_interval"`
 }
 
 type OIDC struct {
@@ -40,6 +45,8 @@ type Server struct {
 	Listen string `toml:"listen"`
 
 	BaseURL string `toml:"base_url"`
+
+	ForwardedUserHeader string `toml:"forwarded_user_header"`
 }
 
 type Database struct {
@@ -118,6 +125,7 @@ func Default() Config {
 		},
 		Ebay:     Ebay{Marketplace: "EBAY_US"},
 		Currency: Currency{Target: "EUR"},
+		Monitor:  Monitor{DefaultInterval: Duration{time.Hour}},
 	}
 }
 
@@ -209,6 +217,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Server.ForwardedUserHeader == "" {
 		cfg.Server.ForwardedUserHeader = def.Server.ForwardedUserHeader
+	}
+	if cfg.Monitor.DefaultInterval.Duration == 0 {
+		cfg.Monitor.DefaultInterval = def.Monitor.DefaultInterval
 	}
 }
 

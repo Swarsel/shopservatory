@@ -87,6 +87,13 @@ func (w *willhaben) Search(ctx context.Context, spec SearchSpec) ([]Listing, err
 	return listings, nil
 }
 
+func (w *willhaben) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	return ldjsonSnapshot(ctx, w.client, "willhaben", rawURL, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "de-AT,de;q=0.9,en;q=0.8",
+	})
+}
+
 type whAdvert struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`

@@ -12,6 +12,9 @@ level = "info"
 name = "admin"
 email = "admin@localhost"
 
+[monitor]
+default_interval = "1h"
+
 [scrape]
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) shopservatory/0.1"
 default_interval = "5m"

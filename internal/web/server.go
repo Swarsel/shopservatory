@@ -150,8 +150,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "recent listings", err)
 		return
 	}
+	monitors, err := s.monitorViews(r.Context(), userID)
+	if err != nil {
+		s.fail(w, "list monitors", err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(stateData{Searches: searches, Listings: listings}); err != nil {
+	if err := json.NewEncoder(w).Encode(stateData{Searches: searches, Listings: listings, Monitors: monitors}); err != nil {
 		s.log.Error("web: encode state", "err", err)
 	}
 }
@@ -216,8 +221,20 @@ func safeImageURL(raw string) (string, bool) {
 	return u.String(), true
 }
 
-func (s *Server) searchViews(ctx context.Context) ([]searchView, error) {
-	searches, err := s.store.ListSearches(ctx, false)
+func (s *Server) handleAPIMe(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"userId": auth.UserID(r.Context())})
+}
+
+func (s *Server) handleAPISources(w http.ResponseWriter, r *http.Request) {
+	out := make([]sourceOption, 0)
+	for _, src := range s.registry.All() {
+		out = append(out, sourceOption{ID: src.ID(), Name: src.DisplayName()})
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) searchViews(ctx context.Context, userID int64) ([]searchView, error) {
+	searches, err := s.store.ListSearchesForUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -250,8 +267,11 @@ func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int
 			when = l.ListedAt
 		}
 		out = append(out, listingView{
-			Source: l.Source, SearchID: l.SearchID, Title: l.Title, URL: l.URL, ImageURL: l.ImageURL,
+			Source: l.Source, SearchID: l.SearchID, ExternalID: l.ExternalID,
+			Title: l.Title, URL: l.URL, ImageURL: l.ImageURL, SaleType: l.SaleType,
 			Price:       priceString(l.Price, l.Currency),
+			PriceValue:  l.Price,
+			Currency:    l.Currency,
 			PriceApprox: s.fx.Format(l.Price, l.Currency),
 			Seen:        when.Format("2006-01-02 15:04"),
 		})
@@ -260,27 +280,50 @@ func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	se, err := s.parseSearchForm(r)
+	base, err := s.parseCommonForm(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if _, err := s.store.CreateSearch(r.Context(), se); err != nil {
-		s.fail(w, "create search", err)
+	sources := s.validSources(r.PostForm["source"])
+	if len(sources) == 0 {
+		http.Error(w, errUnknownSource.Error(), http.StatusBadRequest)
 		return
+	}
+	for _, src := range sources {
+		se := base
+		se.Source = src
+		if _, err := s.store.CreateSearch(r.Context(), se); err != nil {
+			s.fail(w, "create search", err)
+			return
+		}
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func (s *Server) validSources(raw []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(raw))
+	for _, src := range raw {
+		if seen[src] {
+			continue
+		}
+		if _, ok := s.registry.Get(src); !ok {
+			continue
+		}
+		seen[src] = true
+		out = append(out, src)
+	}
+	return out
+}
+
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	id, ok := pathID(w, r)
+	if !ok {
 		return
 	}
-	existing, err := s.store.GetSearch(r.Context(), id)
-	if err != nil {
-		s.fail(w, "get search", err)
+	existing, ok := s.ownedSearch(w, r, id)
+	if !ok {
 		return
 	}
 	se, err := s.parseSearchForm(r)

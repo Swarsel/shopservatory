@@ -77,6 +77,13 @@ func (k *kleinanzeigen) Search(ctx context.Context, spec SearchSpec) ([]Listing,
 	return listings, nil
 }
 
+func (k *kleinanzeigen) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	return ldjsonSnapshot(ctx, k.client, "kleinanzeigen", rawURL, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+	})
+}
+
 func kleinanzeigenURL(spec SearchSpec) string {
 	if strings.HasPrefix(spec.Query, "http") {
 		return spec.Query

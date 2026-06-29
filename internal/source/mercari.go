@@ -101,6 +101,7 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 			ID         string      `json:"id"`
 			Name       string      `json:"name"`
 			Price      string      `json:"price"`
+			IsNoPrice  bool        `json:"isNoPrice"`
 			Thumbnails []string    `json:"thumbnails"`
 			ItemType   string      `json:"itemType"`
 			Created    json.Number `json:"created"`
@@ -113,6 +114,11 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 	listings := make([]Listing, 0, len(out.Items))
 	for _, it := range out.Items {
 		price, _ := strconv.ParseFloat(it.Price, 64)
+		saleType := ""
+		if it.IsNoPrice || it.Price == "99999999" {
+			saleType = "auction"
+			price = 0
+		}
 		var thumb string
 		if len(it.Thumbnails) > 0 {
 			thumb = it.Thumbnails[0]
@@ -121,17 +127,70 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 		if sec, err := it.Created.Int64(); err == nil && sec > 0 {
 			listedAt = time.Unix(sec, 0)
 		}
+		itemURL := "https://jp.mercari.com/item/" + it.ID
+		if it.ItemType == "ITEM_TYPE_BEYOND" {
+			itemURL = "https://jp.mercari.com/shops/product/" + it.ID
+		}
 		listings = append(listings, Listing{
 			ExternalID: it.ID,
 			Title:      it.Name,
 			Price:      price,
 			Currency:   "JPY",
-			URL:        "https://jp.mercari.com/item/" + it.ID,
+			URL:        itemURL,
 			ImageURL:   thumb,
+			SaleType:   saleType,
 			ListedAt:   listedAt,
 		})
 	}
 	return listings, nil
+}
+
+func (m *mercari) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	endpoint := "https://api.mercari.jp/items/get?id=" + lastPathSegment(rawURL)
+	dpop, err := mercariDPoP(http.MethodGet, endpoint)
+	if err != nil {
+		return ItemSnapshot{}, fmt.Errorf("mercari: dpop: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	req.Header.Set("X-Platform", "web")
+	req.Header.Set("DPoP", dpop)
+	req.Header.Set("Accept", "application/json")
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode == http.StatusNotFound {
+		return ItemSnapshot{Status: "removed"}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ItemSnapshot{}, fmt.Errorf("mercari: snapshot status %s", resp.Status)
+	}
+	var env struct {
+		Data struct {
+			Name       string      `json:"name"`
+			Price      json.Number `json:"price"`
+			Status     string      `json:"status"`
+			Thumbnails []string    `json:"thumbnails"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return ItemSnapshot{}, fmt.Errorf("mercari: decode snapshot: %w", err)
+	}
+	price, _ := env.Data.Price.Float64()
+	status := "active"
+	if env.Data.Status != "" && env.Data.Status != "on_sale" {
+		status = "sold"
+	}
+	var thumb string
+	if len(env.Data.Thumbnails) > 0 {
+		thumb = env.Data.Thumbnails[0]
+	}
+	return ItemSnapshot{Title: env.Data.Name, Price: price, Currency: "JPY", ImageURL: thumb, Status: status}, nil
 }
 
 func mercariDPoP(method, htu string) (string, error) {

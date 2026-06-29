@@ -132,6 +132,14 @@ func vintedTarget(spec SearchSpec) (string, url.Values, error) {
 	return host, vals, nil
 }
 
+func (v *vinted) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	return ldjsonSnapshot(ctx, v.client, "vinted", rawURL, map[string]string{
+		"User-Agent":      vintedUA,
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "en;q=0.8",
+	})
+}
+
 func (v *vinted) apiGet(ctx context.Context, host, endpoint string) ([]byte, error) {
 	token, err := v.token(ctx, host, false)
 	if err != nil {

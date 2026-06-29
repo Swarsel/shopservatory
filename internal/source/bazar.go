@@ -86,6 +86,13 @@ type bazarItem struct {
 	} `json:"image"`
 }
 
+func (b *bazar) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	return ldjsonSnapshot(ctx, b.client, "bazar", rawURL, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "de-AT,de;q=0.9,en;q=0.8",
+	})
+}
+
 func bazarURL(spec SearchSpec) string {
 	if strings.HasPrefix(spec.Query, "http") {
 		if u, err := url.Parse(spec.Query); err == nil {

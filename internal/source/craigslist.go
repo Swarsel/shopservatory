@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -94,6 +95,33 @@ func (c *craigslist) areaID(ctx context.Context, subdomain string) (int, error) 
 	c.areaIDs[subdomain] = id
 	c.mu.Unlock()
 	return id, nil
+}
+
+var clPriceRe = regexp.MustCompile(`class="price">\s*\$?([\d,]+)`)
+
+func (c *craigslist) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	body, status, err := c.client.Fetch(ctx, rawURL, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "en-US,en;q=0.9",
+	})
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	if status == http.StatusNotFound || status == http.StatusGone {
+		return ItemSnapshot{Status: "removed"}, nil
+	}
+	if status < 200 || status >= 300 {
+		return ItemSnapshot{}, fmt.Errorf("craigslist: snapshot status %d", status)
+	}
+	h := string(body)
+	if strings.Contains(h, "This posting has been deleted") || strings.Contains(h, "This posting has expired") {
+		return ItemSnapshot{Status: "removed"}, nil
+	}
+	var price float64
+	if m := clPriceRe.FindStringSubmatch(h); m != nil {
+		price, _ = strconv.ParseFloat(nonDigits.ReplaceAllString(m[1], ""), 64)
+	}
+	return ItemSnapshot{Price: price, Currency: "USD", Status: "active"}, nil
 }
 
 func clTarget(spec SearchSpec) (subdomain, query string, err error) {

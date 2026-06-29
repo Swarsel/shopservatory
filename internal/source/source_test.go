@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/Swarsel/shopservatory/internal/config"
 )
 
 func TestWithinPriceBounds(t *testing.T) {
@@ -323,6 +325,20 @@ func TestCollapseSpaces(t *testing.T) {
 	}
 }
 
+func TestAuctionFromURL(t *testing.T) {
+	cases := map[string]string{
+		"https://buyee.jp/item/jdirectitems/auction/k1235221450": "auction",
+		"https://buyee.jp/paypayfleamarket/item/abc":             "",
+		"https://www.mercari.com/jp/items/m37220503944/":         "",
+		"": "",
+	}
+	for in, want := range cases {
+		if got := auctionFromURL(in); got != want {
+			t.Fatalf("auctionFromURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }
@@ -331,14 +347,22 @@ func TestEbayPriceFilter(t *testing.T) {
 		t.Fatalf("empty spec: got %q", got)
 	}
 	got := e.priceFilter(SearchSpec{MinPrice: f(10), MaxPrice: f(100)})
-	if got != "price:[10..100]" {
+	if got != "price:[10..100],priceCurrency:USD" {
 		t.Fatalf("range: got %q", got)
 	}
 	got = e.priceFilter(SearchSpec{
 		MaxPrice: f(50),
 		Params:   map[string]string{"filter": "buyingOptions:{FIXED_PRICE}"},
 	})
-	if got != "price:[..50],buyingOptions:{FIXED_PRICE}" {
+	if got != "price:[..50],priceCurrency:USD,buyingOptions:{FIXED_PRICE}" {
 		t.Fatalf("combined: got %q", got)
+	}
+	got = e.priceFilter(SearchSpec{Params: map[string]string{"buying_options": "AUCTION"}})
+	if got != "buyingOptions:{AUCTION}" {
+		t.Fatalf("buying_options: got %q", got)
+	}
+	de := &ebay{cfg: config.Ebay{Marketplace: "EBAY_DE"}}
+	if got := de.priceFilter(SearchSpec{MaxPrice: f(50)}); got != "price:[..50],priceCurrency:EUR" {
+		t.Fatalf("EUR marketplace: got %q", got)
 	}
 }

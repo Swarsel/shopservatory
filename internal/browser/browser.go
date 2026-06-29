@@ -65,14 +65,21 @@ func (b *Browser) RenderHTML(ctx context.Context, rawURL string, opts RenderOpti
 		settle = 2 * time.Second
 	}
 
+	var html string
 	actions := []chromedp.Action{chromedp.Navigate(rawURL)}
 	if opts.WaitSelector != "" {
-		actions = append(actions, chromedp.WaitVisible(opts.WaitSelector, chromedp.ByQuery))
+		sel := opts.WaitSelector
+		waitBudget := b.timeout / 2
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+			wctx, cancel := context.WithTimeout(ctx, waitBudget)
+			defer cancel()
+			if err := chromedp.WaitVisible(sel, chromedp.ByQuery).Do(wctx); err != nil && b.log != nil {
+				b.log.Debug("browser: wait selector not found, capturing anyway", "url", rawURL, "selector", sel)
+			}
+			return nil
+		}))
 	}
-	actions = append(actions, chromedp.Sleep(settle))
-
-	var html string
-	actions = append(actions, chromedp.OuterHTML("html", &html, chromedp.ByQuery))
+	actions = append(actions, chromedp.Sleep(settle), chromedp.OuterHTML("html", &html, chromedp.ByQuery))
 
 	if err := chromedp.Run(taskCtx, actions...); err != nil {
 		return "", fmt.Errorf("browser render %s: %w", rawURL, err)

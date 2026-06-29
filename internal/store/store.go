@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS listings (
     currency    TEXT NOT NULL DEFAULT '',
     url         TEXT NOT NULL DEFAULT '',
     image_url   TEXT NOT NULL DEFAULT '',
+    sale_type   TEXT NOT NULL DEFAULT '',
     extra       TEXT NOT NULL DEFAULT '{}',
     first_seen  INTEGER NOT NULL,
     listed_at   INTEGER,
@@ -75,6 +76,34 @@ CREATE TABLE IF NOT EXISTS listings (
     UNIQUE(search_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_listings_search_seen ON listings(search_id, first_seen DESC);
+
+CREATE TABLE IF NOT EXISTS monitored_items (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source           TEXT NOT NULL,
+    external_id      TEXT NOT NULL,
+    url              TEXT NOT NULL,
+    title            TEXT NOT NULL DEFAULT '',
+    image_url        TEXT NOT NULL DEFAULT '',
+    currency         TEXT NOT NULL DEFAULT '',
+    sale_type        TEXT NOT NULL DEFAULT '',
+    last_price       REAL NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'active',
+    interval_seconds INTEGER NOT NULL DEFAULT 3600,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    created_at       INTEGER NOT NULL,
+    last_checked_at  INTEGER,
+    UNIQUE(user_id, source, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS monitor_prices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    monitor_id  INTEGER NOT NULL REFERENCES monitored_items(id) ON DELETE CASCADE,
+    price       REAL NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'active',
+    observed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_monitor_prices ON monitor_prices(monitor_id, observed_at);
 
 CREATE TABLE IF NOT EXISTS notification_targets (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +118,10 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 		return err
 	}
 
-	return s.addColumnIfMissing(ctx, "listings", "listed_at", "INTEGER")
+	if err := s.addColumnIfMissing(ctx, "listings", "listed_at", "INTEGER"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing(ctx, "listings", "sale_type", "TEXT NOT NULL DEFAULT ''")
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table, column, typ string) error {
@@ -299,10 +331,10 @@ func (s *Store) RecordListing(ctx context.Context, searchID int64, src string, l
 	}
 	now := seenAt
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO listings (search_id, source, external_id, title, price, currency, url, image_url, extra, first_seen, listed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO listings (search_id, source, external_id, title, price, currency, url, image_url, sale_type, extra, first_seen, listed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(search_id, external_id) DO NOTHING`,
-		searchID, src, l.ExternalID, l.Title, l.Price, l.Currency, l.URL, l.ImageURL, string(extra), now.Unix(), nullUnix(l.ListedAt))
+		searchID, src, l.ExternalID, l.Title, l.Price, l.Currency, l.URL, l.ImageURL, l.SaleType, string(extra), now.Unix(), nullUnix(l.ListedAt))
 	if err != nil {
 		return Listing{}, false, err
 	}
@@ -314,7 +346,7 @@ func (s *Store) RecordListing(ctx context.Context, searchID int64, src string, l
 	return Listing{
 		ID: id, SearchID: searchID, Source: src, ExternalID: l.ExternalID,
 		Title: l.Title, Price: l.Price, Currency: l.Currency, URL: l.URL,
-		ImageURL: l.ImageURL, Extra: l.Extra, FirstSeen: now, ListedAt: l.ListedAt,
+		ImageURL: l.ImageURL, SaleType: l.SaleType, Extra: l.Extra, FirstSeen: now, ListedAt: l.ListedAt,
 	}, true, nil
 }
 
@@ -323,13 +355,20 @@ func (s *Store) MarkNotified(ctx context.Context, id int64) error {
 	return err
 }
 
-func (s *Store) RecentListings(ctx context.Context, limit int) ([]Listing, error) {
+func (s *Store) RecentListings(ctx context.Context, userID int64, limit int) ([]Listing, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, search_id, source, external_id, title, price, currency, url, image_url, extra, first_seen, listed_at, notified
-		 FROM listings
-		 WHERE id IN (SELECT MIN(id) FROM listings GROUP BY source, external_id)
-		 ORDER BY first_seen DESC, id ASC
-		 LIMIT ?`, limit)
+		`SELECT l.id, l.search_id, l.source, l.external_id, l.title, l.price, l.currency, l.url, l.image_url, l.sale_type, l.extra, l.first_seen, l.listed_at, l.notified
+		 FROM listings l
+		 JOIN searches se ON se.id = l.search_id
+		 WHERE se.user_id = ?
+		   AND l.id IN (
+		     SELECT MIN(l2.id) FROM listings l2
+		     JOIN searches se2 ON se2.id = l2.search_id
+		     WHERE se2.user_id = ?
+		     GROUP BY l2.source, l2.external_id
+		   )
+		 ORDER BY l.first_seen DESC, l.id ASC
+		 LIMIT ?`, userID, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +472,7 @@ func scanListings(rows *sql.Rows) ([]Listing, error) {
 			listedAt sql.NullInt64
 		)
 		if err := rows.Scan(&l.ID, &l.SearchID, &l.Source, &l.ExternalID, &l.Title,
-			&l.Price, &l.Currency, &l.URL, &l.ImageURL, &extra, asTime(&l.FirstSeen), &listedAt, asBool(&l.Notified)); err != nil {
+			&l.Price, &l.Currency, &l.URL, &l.ImageURL, &l.SaleType, &extra, asTime(&l.FirstSeen), &listedAt, asBool(&l.Notified)); err != nil {
 			return nil, err
 		}
 		l.Extra = decodeMap(extra)

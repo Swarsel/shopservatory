@@ -92,6 +92,13 @@ type shpockItem struct {
 	} `json:"offers"`
 }
 
+func (s *shpock) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	return ldjsonSnapshot(ctx, s.client, "shpock", rawURL, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "de-AT,de;q=0.9,en;q=0.8",
+	})
+}
+
 func shpockURL(spec SearchSpec) string {
 	if strings.HasPrefix(spec.Query, "http") {
 		return spec.Query

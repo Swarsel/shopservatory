@@ -108,6 +108,31 @@ func (s *surugaya) Search(ctx context.Context, spec SearchSpec) ([]Listing, erro
 	return listings, nil
 }
 
+func (s *surugaya) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	var (
+		html string
+		err  error
+	)
+	if s.client.FlareSolverrAvailable() {
+		html, err = s.client.SolveHTML(ctx, rawURL)
+	} else {
+		html, err = s.client.RenderHTML(ctx, rawURL, browser.RenderOptions{WaitSelector: ".price-buy", SettleDelay: 3 * time.Second})
+	}
+	if err != nil {
+		return ItemSnapshot{}, fmt.Errorf("surugaya: fetch: %w", err)
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	price, _ := strconv.ParseFloat(nonDigits.ReplaceAllString(doc.Find(".price-buy").First().Text(), ""), 64)
+	status := "active"
+	if price == 0 && strings.Contains(doc.Find(".price_group, .item-price").Text(), "品切れ") {
+		status = "sold"
+	}
+	return ItemSnapshot{Price: price, Currency: "JPY", Status: status}, nil
+}
+
 func surugayaImageURL(id string) string {
 	if id == "" {
 		return ""

@@ -65,7 +65,15 @@ func (t *Telegram) format(ev Event) string {
 		}
 	}
 	if p := formatPrice(ev.Listing.Price, ev.Listing.Currency); p != "" {
-		fmt.Fprintf(&b, "💴 %s\n", html.EscapeString(p))
+		line := p
+		if ev.PriceApprox != "" {
+			line += " " + ev.PriceApprox
+		}
+		fmt.Fprintf(&b, "💴 %s\n", html.EscapeString(line))
+	}
+	if ev.Note != "" {
+		fmt.Fprintf(&b, "%s", html.EscapeString(ev.Note))
+		return b.String()
 	}
 	fmt.Fprintf(&b, "🔎 query: <i>%s</i>", html.EscapeString(ev.Search.Query))
 	return b.String()

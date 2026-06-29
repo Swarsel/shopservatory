@@ -47,11 +47,36 @@ type Listing struct {
 	Currency   string
 	URL        string
 	ImageURL   string
+	SaleType   string
 	Extra      map[string]string
 	FirstSeen  time.Time
 
 	ListedAt time.Time
 	Notified bool
+}
+
+type MonitoredItem struct {
+	ID            int64
+	UserID        int64
+	Source        string
+	ExternalID    string
+	URL           string
+	Title         string
+	ImageURL      string
+	Currency      string
+	SaleType      string
+	LastPrice     float64
+	Status        string
+	Interval      time.Duration
+	Enabled       bool
+	CreatedAt     time.Time
+	LastCheckedAt *time.Time
+}
+
+type PricePoint struct {
+	Price      float64
+	Status     string
+	ObservedAt time.Time
 }
 
 type NotificationTarget struct {

@@ -38,6 +38,8 @@ type Listing struct {
 	URL        string
 	ImageURL   string
 
+	SaleType string
+
 	ListedAt time.Time
 
 	Extra map[string]string
@@ -49,6 +51,19 @@ type Source interface {
 	DisplayName() string
 
 	Search(ctx context.Context, spec SearchSpec) ([]Listing, error)
+}
+
+type ItemSnapshot struct {
+	Title    string
+	Price    float64
+	Currency string
+	ImageURL string
+	Status   string
+	SaleType string
+}
+
+type ItemMonitor interface {
+	Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error)
 }
 
 type Client struct {
@@ -103,26 +118,34 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) GetBody(ctx context.Context, rawURL string, headers map[string]string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	body, status, err := c.Fetch(ctx, rawURL, headers)
 	if err != nil {
 		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("GET %s: unexpected status %d", rawURL, status)
+	}
+	return body, nil
+}
+
+func (c *Client) Fetch(ctx context.Context, rawURL string, headers map[string]string) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, 0, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET %s: unexpected status %s", rawURL, resp.Status)
-	}
-	return body, nil
+	return body, resp.StatusCode, nil
 }
 
 type Registry struct {

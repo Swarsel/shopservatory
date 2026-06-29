@@ -88,11 +88,17 @@ func (e *ebay) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 				Value    string `json:"value"`
 				Currency string `json:"currency"`
 			} `json:"price"`
+			CurrentBidPrice struct {
+				Value    string `json:"value"`
+				Currency string `json:"currency"`
+			} `json:"currentBidPrice"`
+			BidCount   int    `json:"bidCount"`
 			ItemWebURL string `json:"itemWebUrl"`
 			Image      struct {
 				ImageURL string `json:"imageUrl"`
 			} `json:"image"`
-			Seller struct {
+			BuyingOptions []string `json:"buyingOptions"`
+			Seller        struct {
 				Username string `json:"username"`
 			} `json:"seller"`
 		} `json:"itemSummaries"`
@@ -103,24 +109,117 @@ func (e *ebay) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 
 	listings := make([]Listing, 0, len(out.ItemSummaries))
 	for _, it := range out.ItemSummaries {
-		price, _ := strconv.ParseFloat(it.Price.Value, 64)
+		saleType := "fixed"
+		for _, o := range it.BuyingOptions {
+			if o == "AUCTION" {
+				saleType = "auction"
+			}
+		}
+		value, currency := it.Price.Value, it.Price.Currency
+		if value == "" && it.CurrentBidPrice.Value != "" {
+			value, currency = it.CurrentBidPrice.Value, it.CurrentBidPrice.Currency
+		}
+		price, _ := strconv.ParseFloat(value, 64)
 		if !withinPriceBounds(spec, price) {
 			continue
+		}
+		extra := map[string]string{
+			"condition": it.Condition,
+			"seller":    it.Seller.Username,
+		}
+		if saleType == "auction" {
+			extra["bids"] = strconv.Itoa(it.BidCount)
 		}
 		listings = append(listings, Listing{
 			ExternalID: it.ItemID,
 			Title:      it.Title,
 			Price:      price,
-			Currency:   it.Price.Currency,
+			Currency:   currency,
 			URL:        it.ItemWebURL,
 			ImageURL:   it.Image.ImageURL,
-			Extra: map[string]string{
-				"condition": it.Condition,
-				"seller":    it.Seller.Username,
-			},
+			SaleType:   saleType,
+			Extra:      extra,
 		})
 	}
 	return listings, nil
+}
+
+func (e *ebay) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	id := leadingDigits(strings.TrimLeft(lastPathSegment(u.Path), "0"))
+	if id == "" {
+		id = nonDigits.ReplaceAllString(lastPathSegment(u.Path), "")
+	}
+	if id == "" {
+		return ItemSnapshot{}, fmt.Errorf("ebay: no item id in %q", rawURL)
+	}
+	token, err := e.accessToken(ctx)
+	if err != nil {
+		return ItemSnapshot{}, fmt.Errorf("ebay: auth: %w", err)
+	}
+	endpoint := "https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=" + id
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-EBAY-C-MARKETPLACE-ID", e.cfg.Marketplace)
+	req.Header.Set("Accept", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode == http.StatusNotFound {
+		return ItemSnapshot{Status: "removed"}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ItemSnapshot{}, fmt.Errorf("ebay: snapshot status %s", resp.Status)
+	}
+
+	var it struct {
+		Title string `json:"title"`
+		Price struct {
+			Value    string `json:"value"`
+			Currency string `json:"currency"`
+		} `json:"price"`
+		CurrentBidPrice struct {
+			Value    string `json:"value"`
+			Currency string `json:"currency"`
+		} `json:"currentBidPrice"`
+		Image struct {
+			ImageURL string `json:"imageUrl"`
+		} `json:"image"`
+		BuyingOptions           []string `json:"buyingOptions"`
+		EstimatedAvailabilities []struct {
+			EstimatedAvailabilityStatus string `json:"estimatedAvailabilityStatus"`
+		} `json:"estimatedAvailabilities"`
+	}
+	if err := json.Unmarshal(body, &it); err != nil {
+		return ItemSnapshot{}, fmt.Errorf("ebay: decode snapshot: %w", err)
+	}
+	value, currency := it.Price.Value, it.Price.Currency
+	if value == "" && it.CurrentBidPrice.Value != "" {
+		value, currency = it.CurrentBidPrice.Value, it.CurrentBidPrice.Currency
+	}
+	price, _ := strconv.ParseFloat(value, 64)
+	saleType := "fixed"
+	for _, o := range it.BuyingOptions {
+		if o == "AUCTION" {
+			saleType = "auction"
+		}
+	}
+	status := "active"
+	for _, a := range it.EstimatedAvailabilities {
+		if a.EstimatedAvailabilityStatus == "OUT_OF_STOCK" {
+			status = "sold"
+		}
+	}
+	return ItemSnapshot{Title: it.Title, Price: price, Currency: currency, ImageURL: it.Image.ImageURL, Status: status, SaleType: saleType}, nil
 }
 
 func (e *ebay) priceFilter(spec SearchSpec) string {
@@ -134,11 +233,34 @@ func (e *ebay) priceFilter(spec SearchSpec) string {
 			hi = strconv.FormatFloat(*spec.MaxPrice, 'f', -1, 64)
 		}
 		parts = append(parts, fmt.Sprintf("price:[%s..%s]", lo, hi))
+		parts = append(parts, "priceCurrency:"+ebayCurrency(e.cfg.Marketplace))
+	}
+	if bo := spec.Param("buying_options"); bo != "" {
+		parts = append(parts, "buyingOptions:{"+strings.ToUpper(bo)+"}")
 	}
 	if raw := spec.Param("filter"); raw != "" {
 		parts = append(parts, raw)
 	}
 	return strings.Join(parts, ",")
+}
+
+func ebayCurrency(marketplace string) string {
+	switch marketplace {
+	case "EBAY_GB":
+		return "GBP"
+	case "EBAY_CA":
+		return "CAD"
+	case "EBAY_AU":
+		return "AUD"
+	case "EBAY_CH":
+		return "CHF"
+	case "EBAY_PL":
+		return "PLN"
+	case "EBAY_DE", "EBAY_AT", "EBAY_FR", "EBAY_IT", "EBAY_ES", "EBAY_NL", "EBAY_BE", "EBAY_IE":
+		return "EUR"
+	default:
+		return "USD"
+	}
 }
 
 func (e *ebay) accessToken(ctx context.Context) (string, error) {

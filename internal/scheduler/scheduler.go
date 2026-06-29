@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -57,6 +58,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	defer t.Stop()
 
 	s.runDue(ctx)
+	s.runDueMonitors(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -64,6 +66,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-t.C:
 			s.runDue(ctx)
+			s.runDueMonitors(ctx)
 		}
 	}
 }
@@ -103,6 +106,135 @@ func (s *Scheduler) runDue(ctx context.Context) {
 		}(se)
 	}
 	wg.Wait()
+}
+
+func (s *Scheduler) RunMonitorNow(id int64) {
+	go func() {
+		m, err := s.store.GetMonitor(context.Background(), id)
+		if err != nil {
+			s.log.Error("scheduler: run-now: get monitor", "monitor", id, "err", err)
+			return
+		}
+		s.pollMonitor(context.Background(), m)
+	}()
+}
+
+func (s *Scheduler) runDueMonitors(ctx context.Context) {
+	monitors, err := s.store.DueMonitors(ctx)
+	if err != nil {
+		s.log.Error("scheduler: list monitors", "err", err)
+		return
+	}
+	now := time.Now()
+	sem := make(chan struct{}, s.maxConcurrent)
+	var wg sync.WaitGroup
+	for _, m := range monitors {
+		if !s.monitorDue(m, now) {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(m store.MonitoredItem) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.pollMonitor(ctx, m)
+		}(m)
+	}
+	wg.Wait()
+}
+
+func (s *Scheduler) monitorDue(m store.MonitoredItem, now time.Time) bool {
+	if m.LastCheckedAt == nil {
+		return true
+	}
+	interval := m.Interval
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	return now.Sub(*m.LastCheckedAt) >= interval
+}
+
+func (s *Scheduler) pollMonitor(ctx context.Context, m store.MonitoredItem) {
+	src, ok := s.registry.Get(m.Source)
+	if !ok {
+		return
+	}
+	mon, ok := src.(source.ItemMonitor)
+	if !ok {
+		return
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	snap, err := mon.Snapshot(pollCtx, m.URL)
+	if err != nil {
+		s.log.Warn("scheduler: monitor snapshot failed", "monitor", m.ID, "source", m.Source, "err", err)
+		_ = s.store.TouchMonitorCheck(ctx, m.ID, time.Now())
+		return
+	}
+
+	first := m.LastCheckedAt == nil
+	note := monitorNote(m, snap)
+	if err := s.store.RecordMonitorCheck(ctx, m.ID, snap, time.Now()); err != nil {
+		s.log.Error("scheduler: record monitor check", "monitor", m.ID, "err", err)
+		return
+	}
+	if first || note == "" {
+		return
+	}
+
+	targets, err := s.store.ListTargets(ctx, m.UserID)
+	if err != nil {
+		s.log.Error("scheduler: list targets", "monitor", m.ID, "err", err)
+		return
+	}
+	currency := m.Currency
+	if snap.Currency != "" {
+		currency = snap.Currency
+	}
+	image := m.ImageURL
+	if snap.ImageURL != "" {
+		image = snap.ImageURL
+	}
+	title := m.Title
+	if snap.Title != "" {
+		title = snap.Title
+	}
+	s.notifier.Dispatch(ctx, targets, notify.Event{
+		Source: src.DisplayName(),
+		Note:   note,
+		Listing: store.Listing{
+			Title: title, URL: m.URL, ImageURL: image, Price: snap.Price, Currency: currency,
+		},
+	})
+}
+
+func monitorNote(m store.MonitoredItem, snap source.ItemSnapshot) string {
+	if m.Status == "active" && snap.Status == "sold" {
+		return "🔴 Sold"
+	}
+	if m.Status == "active" && snap.Status == "removed" {
+		return "⚪ Removed"
+	}
+	if m.Status == "active" && snap.Status == "active" && snap.Price > 0 && m.LastPrice > 0 && snap.Price != m.LastPrice {
+		cur := m.Currency
+		if snap.Currency != "" {
+			cur = snap.Currency
+		}
+		arrow := "📉 Price dropped"
+		if snap.Price > m.LastPrice {
+			arrow = "📈 Price rose"
+		}
+		return fmt.Sprintf("%s: %s → %s", arrow, formatAmount(m.LastPrice, cur), formatAmount(snap.Price, cur))
+	}
+	return ""
+}
+
+func formatAmount(v float64, currency string) string {
+	if currency == "" {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmt.Sprintf("%s %.0f", currency, v)
 }
 
 func (s *Scheduler) due(se store.Search, now time.Time) bool {

@@ -31,6 +31,22 @@ func (p *payPayFleaMarket) Search(ctx context.Context, spec SearchSpec) ([]Listi
 	return p.searchBuyee(ctx, spec)
 }
 
+func (p *payPayFleaMarket) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	html, err := p.client.RenderHTML(ctx, rawURL, browser.RenderOptions{SettleDelay: 3 * time.Second})
+	if err != nil {
+		return ItemSnapshot{}, fmt.Errorf("paypayfleamarket: fetch: %w", err)
+	}
+	if snap, ok := snapshotFromLDJSON([]byte(html)); ok {
+		return snap, nil
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return ItemSnapshot{}, err
+	}
+	price, _ := strconv.ParseFloat(nonDigits.ReplaceAllString(doc.Find("p.price, .price").First().Text(), ""), 64)
+	return ItemSnapshot{Price: price, Currency: "JPY", Status: "active"}, nil
+}
+
 func (p *payPayFleaMarket) searchBuyee(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	q := url.Values{}
 	q.Set("keyword", spec.Query)
@@ -88,6 +104,7 @@ func (p *payPayFleaMarket) searchBuyee(ctx context.Context, spec SearchSpec) ([]
 			Currency:   "JPY",
 			URL:        absoluteURL("https://buyee.jp", href),
 			ImageURL:   absoluteURL("https://buyee.jp", img),
+			SaleType:   auctionFromURL(href),
 			Extra:      map[string]string{"proxy": "buyee"},
 		})
 	})
@@ -126,6 +143,7 @@ func (p *payPayFleaMarket) searchDirect(ctx context.Context, spec SearchSpec) ([
 			Title:      title,
 			Currency:   "JPY",
 			URL:        absoluteURL("https://paypayfleamarket.yahoo.co.jp", href),
+			SaleType:   auctionFromURL(href),
 		})
 	})
 	return listings, nil

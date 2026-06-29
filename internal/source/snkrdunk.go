@@ -93,6 +93,13 @@ func (s *snkrdunk) Search(ctx context.Context, spec SearchSpec) ([]Listing, erro
 	return listings, nil
 }
 
+func (s *snkrdunk) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	return ldjsonSnapshot(ctx, s.client, "snkrdunk", rawURL, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "ja,en;q=0.8",
+	})
+}
+
 func parseSnkrdunkURL(raw string) (brand string, categoryID int64, order string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

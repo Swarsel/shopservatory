@@ -9,9 +9,11 @@ import (
 )
 
 type Event struct {
-	Search  store.Search
-	Source  string
-	Listing store.Listing
+	Search      store.Search
+	Source      string
+	Listing     store.Listing
+	Note        string
+	PriceApprox string
 }
 
 type Notifier interface {
@@ -20,13 +22,18 @@ type Notifier interface {
 	Send(ctx context.Context, target store.NotificationTarget, ev Event) error
 }
 
+type RateConverter interface {
+	Format(amount float64, currency string) string
+}
+
 type Manager struct {
 	notifiers map[string]Notifier
+	fx        RateConverter
 	log       *slog.Logger
 }
 
-func NewManager(log *slog.Logger, notifiers ...Notifier) *Manager {
-	m := &Manager{notifiers: map[string]Notifier{}, log: log}
+func NewManager(log *slog.Logger, fx RateConverter, notifiers ...Notifier) *Manager {
+	m := &Manager{notifiers: map[string]Notifier{}, fx: fx, log: log}
 	for _, n := range notifiers {
 		if n != nil {
 			m.notifiers[n.Kind()] = n
@@ -44,6 +51,9 @@ func (m *Manager) Kinds() []string {
 }
 
 func (m *Manager) Dispatch(ctx context.Context, targets []store.NotificationTarget, ev Event) {
+	if m.fx != nil && ev.PriceApprox == "" {
+		ev.PriceApprox = m.fx.Format(ev.Listing.Price, ev.Listing.Currency)
+	}
 	for _, t := range targets {
 		n, ok := m.notifiers[t.Kind]
 		if !ok {
