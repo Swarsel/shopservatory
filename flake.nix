@@ -14,23 +14,26 @@
     };
   };
 
-  outputs = inputs:
+  outputs =
+    inputs:
     let
       pname = "shopservatory";
-      version = "0.1.0";
+      version = "0.2.0";
 
-      mkShopservatory = pkgs: pkgs.buildGoModule {
-        inherit pname version;
-        src = inputs.self;
-        vendorHash = "sha256-lkdXgY2zflU5WyifCURqGjc5B9N748L8/1jBEvbsDbk=";
-        subPackages = [ "cmd/shopservatory" ];
-        meta = {
-          description = "Monitors second-hand shopping sites for new items and notifies you";
-          mainProgram = "shopservatory";
-          license = pkgs.lib.licenses.mit;
-          platforms = pkgs.lib.platforms.linux;
+      mkShopservatory =
+        pkgs:
+        pkgs.buildGoModule {
+          inherit pname version;
+          src = inputs.self;
+          vendorHash = "sha256-lkdXgY2zflU5WyifCURqGjc5B9N748L8/1jBEvbsDbk=";
+          subPackages = [ "cmd/shopservatory" ];
+          meta = {
+            description = "Monitors second-hand shopping sites for new items and notifies you";
+            mainProgram = "shopservatory";
+            license = pkgs.lib.licenses.mit;
+            platforms = pkgs.lib.platforms.linux;
+          };
         };
-      };
     in
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [
@@ -38,56 +41,70 @@
         inputs.git-hooks-nix.flakeModule
       ];
 
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
 
-      perSystem = { config, self', pkgs, ... }: {
-        treefmt = {
-          programs = {
-            nixpkgs-fmt.enable = true;
-            gofmt.enable = true;
-            deadnix.enable = true;
-            statix.enable = true;
-          };
-        };
-
-        pre-commit.settings.hooks =
-          let
-            pureGo = name: cmd: {
-              enable = true;
-              pass_filenames = false;
-              entry = pkgs.lib.mkForce (toString (pkgs.writeShellScript "shopservatory-${name}" ''
-                export CGO_ENABLED=0
-                exec ${pkgs.go}/bin/go ${cmd}
-              ''));
+      perSystem =
+        {
+          config,
+          self',
+          pkgs,
+          ...
+        }:
+        {
+          treefmt = {
+            programs = {
+              nixpkgs-fmt.enable = true;
+              gofmt.enable = true;
+              deadnix.enable = true;
+              statix.enable = true;
             };
-          in
-          {
-            treefmt.enable = true;
-            gotest = pureGo "gotest" "test ./...";
-            govet = pureGo "govet" "vet ./...";
           };
 
-        packages = rec {
-          shopservatory = mkShopservatory pkgs;
-          default = shopservatory;
-        };
+          pre-commit.settings.hooks =
+            let
+              pureGo = name: cmd: {
+                enable = true;
+                pass_filenames = false;
+                entry = pkgs.lib.mkForce (
+                  toString (
+                    pkgs.writeShellScript "shopservatory-${name}" ''
+                      export CGO_ENABLED=0
+                      exec ${pkgs.go}/bin/go ${cmd}
+                    ''
+                  )
+                );
+              };
+            in
+            {
+              treefmt.enable = true;
+              gotest = pureGo "gotest" "test ./...";
+              govet = pureGo "govet" "vet ./...";
+            };
 
-        devShells.default = pkgs.mkShell {
-          inputsFrom = [ self'.packages.default ];
-          nativeBuildInputs = with pkgs; [
-            go
-            gopls
-            gotools
-            go-tools
-            golangci-lint
-            chromium
-            flaresolverr
-          ];
-          SHOPSERVATORY_CHROMIUM = pkgs.lib.getExe pkgs.chromium;
-          CGO_ENABLED = "0";
-          shellHook = config.pre-commit.installationScript;
+          packages = rec {
+            shopservatory = mkShopservatory pkgs;
+            default = shopservatory;
+          };
+
+          devShells.default = pkgs.mkShell {
+            inputsFrom = [ self'.packages.default ];
+            nativeBuildInputs = with pkgs; [
+              go
+              gopls
+              gotools
+              go-tools
+              golangci-lint
+              chromium
+              flaresolverr
+            ];
+            SHOPSERVATORY_CHROMIUM = pkgs.lib.getExe pkgs.chromium;
+            CGO_ENABLED = "0";
+            shellHook = config.pre-commit.installationScript;
+          };
         };
-      };
 
       flake =
         let
