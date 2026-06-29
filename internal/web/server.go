@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Swarsel/shopservatory/internal/auth"
 	"github.com/Swarsel/shopservatory/internal/fx"
 	"github.com/Swarsel/shopservatory/internal/scheduler"
 	"github.com/Swarsel/shopservatory/internal/source"
@@ -24,22 +25,28 @@ type Server struct {
 	registry *source.Registry
 	sched    *scheduler.Scheduler
 	fx       *fx.Converter
+	auth     *auth.Authenticator
 	log      *slog.Logger
-	userID   int64
 	tmpl     *template.Template
 	images   *http.Client
+
+	monitorInterval time.Duration
 }
 
-func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv *fx.Converter, log *slog.Logger, userID int64) *Server {
+func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv *fx.Converter, authn *auth.Authenticator, monitorInterval time.Duration, log *slog.Logger) *Server {
+	if monitorInterval <= 0 {
+		monitorInterval = time.Hour
+	}
 	return &Server{
-		store:    st,
-		registry: reg,
-		sched:    sched,
-		fx:       conv,
-		log:      log,
-		userID:   userID,
-		tmpl:     template.Must(template.New("page").Parse(pageTemplate)),
-		images:   &http.Client{Timeout: 15 * time.Second},
+		store:           st,
+		registry:        reg,
+		sched:           sched,
+		fx:              conv,
+		auth:            authn,
+		log:             log,
+		tmpl:            template.Must(template.New("page").Parse(pageTemplate)),
+		images:          &http.Client{Timeout: 15 * time.Second},
+		monitorInterval: monitorInterval,
 	}
 }
 
@@ -49,14 +56,29 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("GET /{$}", s.handleIndex)
-	mux.HandleFunc("GET /img", s.handleImageProxy)
-	mux.HandleFunc("GET /api/state", s.handleState)
-	mux.HandleFunc("POST /searches", s.handleCreate)
-	mux.HandleFunc("POST /searches/{id}/update", s.handleUpdate)
-	mux.HandleFunc("POST /searches/{id}/delete", s.handleDelete)
-	mux.HandleFunc("POST /searches/{id}/toggle", s.handleToggle)
-	mux.HandleFunc("POST /searches/{id}/run", s.handleRun)
+	b := s.auth.BrowserAuth
+	mux.Handle("GET /{$}", b(http.HandlerFunc(s.handleIndex)))
+	mux.Handle("GET /img", b(http.HandlerFunc(s.handleImageProxy)))
+	mux.Handle("GET /api/state", b(http.HandlerFunc(s.handleState)))
+	mux.Handle("POST /searches", b(http.HandlerFunc(s.handleCreate)))
+	mux.Handle("POST /searches/{id}/update", b(http.HandlerFunc(s.handleUpdate)))
+	mux.Handle("POST /searches/{id}/delete", b(http.HandlerFunc(s.handleDelete)))
+	mux.Handle("POST /searches/{id}/toggle", b(http.HandlerFunc(s.handleToggle)))
+	mux.Handle("POST /searches/{id}/run", b(http.HandlerFunc(s.handleRun)))
+	mux.Handle("POST /monitors", b(http.HandlerFunc(s.handleAddMonitor)))
+	mux.Handle("POST /monitors/{id}/update", b(http.HandlerFunc(s.handleUpdateMonitor)))
+	mux.Handle("POST /monitors/{id}/delete", b(http.HandlerFunc(s.handleDeleteMonitor)))
+	mux.Handle("POST /monitors/{id}/run", b(http.HandlerFunc(s.handleRunMonitor)))
+
+	a := s.auth.APIAuth
+	mux.Handle("GET /api/v1/me", a(http.HandlerFunc(s.handleAPIMe)))
+	mux.Handle("GET /api/v1/sources", a(http.HandlerFunc(s.handleAPISources)))
+	mux.Handle("GET /api/v1/state", a(http.HandlerFunc(s.handleState)))
+	mux.Handle("POST /api/v1/searches", a(http.HandlerFunc(s.handleAPICreate)))
+	mux.Handle("POST /api/v1/searches/{id}/update", a(http.HandlerFunc(s.handleAPIUpdate)))
+	mux.Handle("POST /api/v1/searches/{id}/delete", a(http.HandlerFunc(s.handleDelete)))
+	mux.Handle("POST /api/v1/searches/{id}/toggle", a(http.HandlerFunc(s.handleToggle)))
+	mux.Handle("POST /api/v1/searches/{id}/run", a(http.HandlerFunc(s.handleRun)))
 	return mux
 }
 
@@ -81,19 +103,24 @@ type searchView struct {
 }
 
 type listingView struct {
-	Source      string `json:"source"`
-	SearchID    int64  `json:"searchId"`
-	Title       string `json:"title"`
-	Price       string `json:"price"`
-	PriceApprox string `json:"priceApprox"`
-	URL         string `json:"url"`
-	ImageURL    string `json:"imageUrl"`
-	Seen        string `json:"seen"`
+	Source      string  `json:"source"`
+	SearchID    int64   `json:"searchId"`
+	ExternalID  string  `json:"externalId"`
+	Title       string  `json:"title"`
+	Price       string  `json:"price"`
+	PriceValue  float64 `json:"priceValue"`
+	Currency    string  `json:"currency"`
+	PriceApprox string  `json:"priceApprox"`
+	URL         string  `json:"url"`
+	ImageURL    string  `json:"imageUrl"`
+	SaleType    string  `json:"saleType"`
+	Seen        string  `json:"seen"`
 }
 
 type stateData struct {
 	Searches []searchView  `json:"searches"`
 	Listings []listingView `json:"listings"`
+	Monitors []monitorView `json:"monitors"`
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
@@ -108,12 +135,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	searches, err := s.searchViews(r.Context())
+	userID := auth.UserID(r.Context())
+	searches, err := s.searchViews(r.Context(), userID)
 	if err != nil {
 		s.fail(w, "list searches", err)
 		return
 	}
-	listings, err := s.recentListingViews(r.Context())
+	limit := 100
+	if r.URL.Query().Get("all") == "1" {
+		limit = 1000000
+	}
+	listings, err := s.recentListingViews(r.Context(), userID, limit)
 	if err != nil {
 		s.fail(w, "recent listings", err)
 		return
@@ -205,8 +237,8 @@ func (s *Server) searchViews(ctx context.Context) ([]searchView, error) {
 	return out, nil
 }
 
-func (s *Server) recentListingViews(ctx context.Context) ([]listingView, error) {
-	listings, err := s.store.RecentListings(ctx, 100)
+func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int) ([]listingView, error) {
+	listings, err := s.store.RecentListings(ctx, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -271,6 +303,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := s.ownedSearch(w, r, id); !ok {
+		return
+	}
 	if err := s.store.DeleteSearch(r.Context(), id); err != nil {
 		s.fail(w, "delete search", err)
 		return
@@ -283,9 +318,8 @@ func (s *Server) handleToggle(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	se, err := s.store.GetSearch(r.Context(), id)
-	if err != nil {
-		s.fail(w, "get search", err)
+	se, ok := s.ownedSearch(w, r, id)
+	if !ok {
 		return
 	}
 	if err := s.store.SetSearchEnabled(r.Context(), id, !se.Enabled); err != nil {
@@ -300,17 +334,109 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := s.ownedSearch(w, r, id); !ok {
+		return
+	}
 	s.sched.RunNow(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) parseSearchForm(r *http.Request) (store.Search, error) {
-	if err := r.ParseForm(); err != nil {
+func (s *Server) ownedSearch(w http.ResponseWriter, r *http.Request, id int64) (store.Search, bool) {
+	se, err := s.store.GetSearch(r.Context(), id)
+	if err != nil || se.UserID != auth.UserID(r.Context()) {
+		http.NotFound(w, r)
+		return store.Search{}, false
+	}
+	return se, true
+}
+
+func (s *Server) handleAPICreate(w http.ResponseWriter, r *http.Request) {
+	se, err := s.parseSearchJSON(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id, err := s.store.CreateSearch(r.Context(), se)
+	if err != nil {
+		s.fail(w, "create search", err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]any{"id": id})
+}
+
+func (s *Server) handleAPIUpdate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	existing, ok := s.ownedSearch(w, r, id)
+	if !ok {
+		return
+	}
+	se, err := s.parseSearchJSON(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	se.ID = id
+	se.UserID = existing.UserID
+	se.Enabled = existing.Enabled
+	if err := s.store.UpdateSearch(r.Context(), se); err != nil {
+		s.fail(w, "update search", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) parseSearchJSON(r *http.Request) (store.Search, error) {
+	var in struct {
+		Source   string            `json:"source"`
+		Query    string            `json:"query"`
+		MinPrice *float64          `json:"minPrice"`
+		MaxPrice *float64          `json:"maxPrice"`
+		Interval string            `json:"interval"`
+		Params   map[string]string `json:"params"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<16)).Decode(&in); err != nil {
 		return store.Search{}, errBadForm
 	}
-	src := r.FormValue("source")
-	if _, ok := s.registry.Get(src); !ok {
+	if _, ok := s.registry.Get(in.Source); !ok {
 		return store.Search{}, errUnknownSource
+	}
+	in.Query = strings.TrimSpace(in.Query)
+	if in.Query == "" {
+		return store.Search{}, errQueryRequired
+	}
+	interval := 5 * time.Minute
+	if in.Interval != "" {
+		if d, err := time.ParseDuration(in.Interval); err == nil {
+			interval = d
+		}
+	}
+	if in.Params == nil {
+		in.Params = map[string]string{}
+	}
+	return store.Search{
+		UserID:   auth.UserID(r.Context()),
+		Source:   in.Source,
+		Query:    in.Query,
+		Params:   in.Params,
+		MinPrice: in.MinPrice,
+		MaxPrice: in.MaxPrice,
+		Interval: interval,
+		Enabled:  true,
+	}, nil
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (s *Server) parseCommonForm(r *http.Request) (store.Search, error) {
+	if err := r.ParseForm(); err != nil {
+		return store.Search{}, errBadForm
 	}
 	query := strings.TrimSpace(r.FormValue("query"))
 	if query == "" {
@@ -323,8 +449,7 @@ func (s *Server) parseSearchForm(r *http.Request) (store.Search, error) {
 		}
 	}
 	return store.Search{
-		UserID:   s.userID,
-		Source:   src,
+		UserID:   auth.UserID(r.Context()),
 		Query:    query,
 		Params:   parseParams(r.FormValue("params")),
 		MinPrice: parsePrice(r.FormValue("min_price")),
@@ -332,6 +457,19 @@ func (s *Server) parseSearchForm(r *http.Request) (store.Search, error) {
 		Interval: interval,
 		Enabled:  true,
 	}, nil
+}
+
+func (s *Server) parseSearchForm(r *http.Request) (store.Search, error) {
+	se, err := s.parseCommonForm(r)
+	if err != nil {
+		return store.Search{}, err
+	}
+	src := r.FormValue("source")
+	if _, ok := s.registry.Get(src); !ok {
+		return store.Search{}, errUnknownSource
+	}
+	se.Source = src
+	return se, nil
 }
 
 func (s *Server) fail(w http.ResponseWriter, what string, err error) {

@@ -139,6 +139,78 @@ func (s *Store) EnsureDefaultUser(ctx context.Context, name, email string) (User
 	return User{ID: id, Name: name, Email: email, CreatedAt: now}, nil
 }
 
+func (s *Store) UserFromIdentity(ctx context.Context, subject, email, name string) (User, error) {
+	scan := func(row *sql.Row) (User, error) {
+		var u User
+		err := row.Scan(&u.ID, &u.Name, &u.Email, &u.OIDCSubject, asTime(&u.CreatedAt))
+		return u, err
+	}
+	if subject != "" {
+		u, err := scan(s.db.QueryRowContext(ctx,
+			`SELECT id, name, email, COALESCE(oidc_subject,''), created_at FROM users WHERE oidc_subject = ?`, subject))
+		if err == nil {
+			return u, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return User{}, err
+		}
+	}
+	if email != "" {
+		u, err := scan(s.db.QueryRowContext(ctx,
+			`SELECT id, name, email, COALESCE(oidc_subject,''), created_at FROM users WHERE email = ?`, email))
+		if err == nil {
+			if subject != "" && u.OIDCSubject != subject {
+				if _, err := s.db.ExecContext(ctx, `UPDATE users SET oidc_subject = ? WHERE id = ?`, subject, u.ID); err != nil {
+					return User{}, err
+				}
+				u.OIDCSubject = subject
+			}
+			return u, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return User{}, err
+		}
+	}
+	if email == "" {
+		if subject == "" {
+			return User{}, fmt.Errorf("cannot resolve user: no subject or email")
+		}
+		email = subject + "@oidc.local"
+	}
+	if name == "" {
+		name = email
+	}
+	now := time.Now()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (name, email, oidc_subject, created_at) VALUES (?, ?, NULLIF(?, ''), ?)`,
+		name, email, subject, now.Unix())
+	if err != nil {
+		return User{}, err
+	}
+	id, _ := res.LastInsertId()
+	return User{ID: id, Name: name, Email: email, OIDCSubject: subject, CreatedAt: now}, nil
+}
+
+func (s *Store) ListSearchesForUser(ctx context.Context, userID int64) ([]Search, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, source, query, params, min_price, max_price,
+		        interval_seconds, enabled, created_at, last_run_at
+		 FROM searches WHERE user_id = ? ORDER BY id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Search
+	for rows.Next() {
+		se, err := scanSearch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, se)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListSearches(ctx context.Context, enabledOnly bool) ([]Search, error) {
 	q := `SELECT id, user_id, source, query, params, min_price, max_price,
 	             interval_seconds, enabled, created_at, last_run_at

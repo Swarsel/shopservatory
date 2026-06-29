@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/Swarsel/shopservatory/internal/auth"
 	"github.com/Swarsel/shopservatory/internal/config"
 	"github.com/Swarsel/shopservatory/internal/fx"
 	"github.com/Swarsel/shopservatory/internal/notify"
@@ -75,8 +76,14 @@ func run() error {
 	registry := source.NewRegistry(cfg, client, log)
 	log.Info("sources registered", "ids", registry.IDs())
 
+	conv := fx.New(cfg.Currency.Target, log)
+	go conv.Run(ctx)
+	if conv.Enabled() {
+		log.Info("currency conversion enabled", "target", conv.Target())
+	}
+
 	tg := notify.NewTelegram(cfg.Telegram.Token)
-	notifier := notify.NewManager(log, tg)
+	notifier := notify.NewManager(log, conv, tg)
 	if !cfg.Telegram.Enabled() {
 		log.Warn("Telegram disabled: no bot token configured (dashboard feed still works)")
 	}
@@ -85,13 +92,17 @@ func run() error {
 		DefaultInterval: cfg.Scrape.DefaultInterval.Duration,
 	})
 
-	conv := fx.New(cfg.Currency.Target, log)
-	go conv.Run(ctx)
-	if conv.Enabled() {
-		log.Info("currency conversion enabled", "target", conv.Target())
+	authn, err := auth.New(ctx, st, cfg.OIDC.Issuer, cfg.OIDC.ClientID, cfg.Server.ForwardedUserHeader, user.ID, log)
+	if err != nil {
+		return fmt.Errorf("init auth: %w", err)
+	}
+	if authn.OIDCEnabled() {
+		log.Info("OIDC enabled", "issuer", cfg.OIDC.Issuer)
+	} else {
+		log.Warn("OIDC disabled: API and dashboard fall back to the default user")
 	}
 
-	srv := web.New(st, registry, sched, conv, log, user.ID)
+	srv := web.New(st, registry, sched, conv, authn, cfg.Monitor.DefaultInterval.Duration, log)
 
 	var wg sync.WaitGroup
 	wg.Add(2)

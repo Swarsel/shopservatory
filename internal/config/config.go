@@ -17,7 +17,15 @@ type Config struct {
 	Ebay     Ebay     `toml:"ebay"`
 	Telegram Telegram `toml:"telegram"`
 	Currency Currency `toml:"currency"`
+	OIDC     OIDC     `toml:"oidc"`
 }
+
+type OIDC struct {
+	Issuer   string `toml:"issuer"`
+	ClientID string `toml:"client_id"`
+}
+
+func (o OIDC) Enabled() bool { return o.Issuer != "" }
 
 type Currency struct {
 	Target string `toml:"target"`
@@ -97,7 +105,7 @@ func (d Duration) MarshalText() ([]byte, error) {
 
 func Default() Config {
 	return Config{
-		Server:   Server{Listen: "127.0.0.1:8080"},
+		Server:   Server{Listen: "127.0.0.1:8080", ForwardedUserHeader: "X-Forwarded-Email"},
 		Database: Database{Path: "shopservatory.db"},
 		Log:      Log{Level: "info"},
 		User:     User{Name: "admin", Email: "admin@localhost"},
@@ -156,6 +164,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SHOPSERVATORY_LISTEN"); v != "" {
 		cfg.Server.Listen = v
 	}
+	if v := os.Getenv("SHOPSERVATORY_OIDC_ISSUER"); v != "" {
+		cfg.OIDC.Issuer = v
+	}
+	if v := os.Getenv("SHOPSERVATORY_OIDC_CLIENT_ID"); v != "" {
+		cfg.OIDC.ClientID = v
+	}
 }
 
 func applyDefaults(cfg *Config) {
@@ -192,6 +206,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.User.Email == "" {
 		cfg.User.Email = def.User.Email
+	}
+	if cfg.Server.ForwardedUserHeader == "" {
+		cfg.Server.ForwardedUserHeader = def.Server.ForwardedUserHeader
 	}
 }
 
