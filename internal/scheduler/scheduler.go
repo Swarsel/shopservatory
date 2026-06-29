@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/Swarsel/shopservatory/internal/source"
 	"github.com/Swarsel/shopservatory/internal/store"
 )
+
+const jitterFraction = 0.2
 
 type Scheduler struct {
 	store    *store.Store
@@ -21,6 +24,9 @@ type Scheduler struct {
 	defaultInterval time.Duration
 	tick            time.Duration
 	maxConcurrent   int
+
+	phaseMu sync.Mutex
+	phase   map[int64]time.Duration
 }
 
 type Options struct {
@@ -49,7 +55,33 @@ func New(st *store.Store, reg *source.Registry, n *notify.Manager, log *slog.Log
 		defaultInterval: opts.DefaultInterval,
 		tick:            opts.Tick,
 		maxConcurrent:   opts.MaxConcurrent,
+		phase:           map[int64]time.Duration{},
 	}
+}
+
+func (s *Scheduler) randJitter(interval time.Duration) time.Duration {
+	w := time.Duration(float64(interval) * jitterFraction)
+	if w <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(2*w)+1)) - w
+}
+
+func (s *Scheduler) phaseFor(id int64, interval time.Duration) time.Duration {
+	s.phaseMu.Lock()
+	defer s.phaseMu.Unlock()
+	d, ok := s.phase[id]
+	if !ok {
+		d = s.randJitter(interval)
+		s.phase[id] = d
+	}
+	return d
+}
+
+func (s *Scheduler) rollPhase(id int64, interval time.Duration) {
+	s.phaseMu.Lock()
+	s.phase[id] = s.randJitter(interval)
+	s.phaseMu.Unlock()
 }
 
 func (s *Scheduler) Run(ctx context.Context) error {
@@ -246,7 +278,7 @@ func (s *Scheduler) due(se store.Search, now time.Time) bool {
 	if interval <= 0 {
 		interval = s.defaultInterval
 	}
-	return now.Sub(*se.LastRunAt) >= interval
+	return now.Sub(*se.LastRunAt) >= interval+s.phaseFor(se.ID, interval)
 }
 
 func (s *Scheduler) poll(ctx context.Context, se store.Search) {
@@ -258,10 +290,15 @@ func (s *Scheduler) poll(ctx context.Context, se store.Search) {
 		return
 	}
 
+	interval := se.Interval
+	if interval <= 0 {
+		interval = s.defaultInterval
+	}
 	defer func() {
 		if err := s.store.TouchSearchRun(ctx, se.ID, time.Now()); err != nil {
 			s.log.Error("scheduler: touch run", "search", se.ID, "err", err)
 		}
+		s.rollPhase(se.ID, interval)
 	}()
 
 	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
