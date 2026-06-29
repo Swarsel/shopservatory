@@ -21,7 +21,7 @@ func (j *jmty) DisplayName() string { return "Jmty" }
 
 func (j *jmty) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	endpoint := jmtyURL(spec)
-	body, err := j.client.GetBody(ctx, endpoint, map[string]string{
+	html, err := j.client.GetHTML(ctx, endpoint, map[string]string{
 		"Accept":          "text/html,application/xhtml+xml",
 		"Accept-Language": "ja,en;q=0.8",
 	})
@@ -29,7 +29,7 @@ func (j *jmty) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 		return nil, fmt.Errorf("jmty: fetch: %w", err)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return nil, fmt.Errorf("jmty: parse html: %w", err)
 	}

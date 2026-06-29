@@ -21,7 +21,7 @@ func (m *magi) DisplayName() string { return "magi" }
 
 func (m *magi) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	endpoint := magiURL(spec)
-	body, err := m.client.GetBody(ctx, endpoint, map[string]string{
+	html, err := m.client.GetHTML(ctx, endpoint, map[string]string{
 		"Accept":          "text/html,application/xhtml+xml",
 		"Accept-Language": "en,ja;q=0.8",
 	})
@@ -29,7 +29,7 @@ func (m *magi) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 		return nil, fmt.Errorf("magi: fetch: %w", err)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return nil, fmt.Errorf("magi: parse html: %w", err)
 	}

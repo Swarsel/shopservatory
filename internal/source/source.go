@@ -128,6 +128,20 @@ func (c *Client) GetBody(ctx context.Context, rawURL string, headers map[string]
 	return body, nil
 }
 
+func (c *Client) GetHTML(ctx context.Context, rawURL string, headers map[string]string) (string, error) {
+	if c.flare != nil {
+		return c.flare.Get(ctx, rawURL)
+	}
+	if c.browser != nil {
+		return c.browser.RenderHTML(ctx, rawURL, browser.RenderOptions{})
+	}
+	body, err := c.GetBody(ctx, rawURL, headers)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
 func (c *Client) Fetch(ctx context.Context, rawURL string, headers map[string]string) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
