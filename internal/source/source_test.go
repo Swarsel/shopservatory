@@ -372,6 +372,17 @@ func TestMagiURL(t *testing.T) {
 	}
 }
 
+func TestYahooAuctionsURL(t *testing.T) {
+	got := yahooAuctionsURL(SearchSpec{Query: "rolex"})
+	if got != "https://zenmarket.jp/en/yahoo.aspx?q=rolex" {
+		t.Fatalf("keyword: %q", got)
+	}
+	full := "https://zenmarket.jp/en/yahoo.aspx?q=x&sort=endtime"
+	if got := yahooAuctionsURL(SearchSpec{Query: full}); got != full {
+		t.Fatalf("full url: %q", got)
+	}
+}
+
 func TestEbayPriceFilter(t *testing.T) {
 	e := &ebay{}
 	f := func(v float64) *float64 { return &v }
