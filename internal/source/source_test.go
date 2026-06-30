@@ -349,6 +349,17 @@ func TestJmtyURL(t *testing.T) {
 	}
 }
 
+func TestAuctionetURL(t *testing.T) {
+	got := auctionetURL(SearchSpec{Query: "rolex"})
+	u, _ := url.Parse(got)
+	if u.Host != "auctionet.com" || u.Path != "/de/search" || u.Query().Get("q") != "rolex" {
+		t.Fatalf("keyword: %q", got)
+	}
+	full := "https://auctionet.com/de/search?q=rolex&order=recent"
+	if got := auctionetURL(SearchSpec{Query: full}); got != full {
+		t.Fatalf("full url: %q", got)
+	}
+}
 func TestRakumaURL(t *testing.T) {
 	got := rakumaURL(SearchSpec{Query: "murakami"})
 	u, _ := url.Parse(got)

@@ -83,6 +83,10 @@ func (s *Server) handleAddMonitor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not determine a supported source for that url", http.StatusBadRequest)
 		return
 	}
+	if _, ok := srcObj.(source.ItemMonitor); !ok {
+		http.Error(w, "this source does not support price monitoring", http.StatusBadRequest)
+		return
+	}
 
 	interval := s.monitorDefault(r.Context(), auth.UserID(r.Context()))
 	if v := strings.TrimSpace(r.FormValue("interval")); v != "" {
