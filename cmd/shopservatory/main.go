@@ -126,7 +126,11 @@ func run() error {
 		log.Info("OIDC login enabled", "issuer", cfg.OIDC.Issuer)
 	}
 
-	srv := web.New(st, registry, sched, conv, authn, cfg.Scrape.DefaultInterval.Duration, cfg.Monitor.DefaultInterval.Duration, log)
+	imageProxy := cfg.Scrape.ProxyURL
+	if imageProxy == "" {
+		imageProxy = cfg.Scrape.BrowserProxy
+	}
+	srv := web.New(st, registry, sched, conv, authn, cfg.Scrape.DefaultInterval.Duration, cfg.Monitor.DefaultInterval.Duration, imageProxy, log)
 
 	var wg sync.WaitGroup
 	wg.Add(2)

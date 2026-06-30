@@ -45,7 +45,7 @@ func TestLoginFlow(t *testing.T) {
 	reg := source.NewRegistry(config.Default(), c, log)
 	conv := fx.New("EUR", log)
 	sched := scheduler.New(st, reg, notify.NewManager(log, conv), log, scheduler.Options{})
-	srv := New(st, reg, sched, conv, authn, 5*time.Minute, time.Hour, log)
+	srv := New(st, reg, sched, conv, authn, 5*time.Minute, time.Hour, "", log)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

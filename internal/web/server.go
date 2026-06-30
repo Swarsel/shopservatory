@@ -21,21 +21,22 @@ import (
 )
 
 type Server struct {
-	store     *store.Store
-	registry  *source.Registry
-	sched     *scheduler.Scheduler
-	fx        *fx.Converter
-	auth      *auth.Authenticator
-	log       *slog.Logger
-	tmpl      *template.Template
-	loginTmpl *template.Template
-	images    *http.Client
+	store       *store.Store
+	registry    *source.Registry
+	sched       *scheduler.Scheduler
+	fx          *fx.Converter
+	auth        *auth.Authenticator
+	log         *slog.Logger
+	tmpl        *template.Template
+	loginTmpl   *template.Template
+	images      *http.Client
+	imagesProxy *http.Client
 
 	searchInterval  time.Duration
 	monitorInterval time.Duration
 }
 
-func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv *fx.Converter, authn *auth.Authenticator, searchInterval, monitorInterval time.Duration, log *slog.Logger) *Server {
+func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv *fx.Converter, authn *auth.Authenticator, searchInterval, monitorInterval time.Duration, imageProxyURL string, log *slog.Logger) *Server {
 	if searchInterval <= 0 {
 		searchInterval = 5 * time.Minute
 	}
@@ -51,10 +52,33 @@ func New(st *store.Store, reg *source.Registry, sched *scheduler.Scheduler, conv
 		log:             log,
 		tmpl:            template.Must(template.New("page").Parse(pageTemplate)),
 		loginTmpl:       template.Must(template.New("login").Parse(loginTemplate)),
-		images:          &http.Client{Timeout: 15 * time.Second},
+		images:          imageClient(""),
+		imagesProxy:     imageClient(imageProxyURL),
 		searchInterval:  searchInterval,
 		monitorInterval: monitorInterval,
 	}
+}
+
+func imageClient(proxyURL string) *http.Client {
+	tr := &http.Transport{}
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			tr.Proxy = http.ProxyURL(u)
+		}
+	}
+	return &http.Client{Timeout: 15 * time.Second, Transport: tr}
+}
+
+var proxiedImageHosts = []string{"jmty.jp"}
+
+func proxiedImageHost(host string) bool {
+	host = strings.ToLower(host)
+	for _, suffix := range proxiedImageHosts {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) searchDefault(ctx context.Context, userID int64) time.Duration {
@@ -261,7 +285,15 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", imageProxyUA)
 	req.Header.Set("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
 
-	resp, err := s.images.Do(req)
+	client := s.images
+	if u, err := url.Parse(target); err == nil {
+		req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
+		if proxiedImageHost(u.Hostname()) {
+			client = s.imagesProxy
+		}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return
