@@ -183,6 +183,7 @@ func NewRegistry(cfg config.Config, client *Client, log *slog.Logger) *Registry 
 	r.add(newRakuma(client))
 	r.add(newMagi(client))
 	r.add(newYahooAuctions(client))
+	r.add(newRicardo(client))
 	r.add(newAuctionet(client))
 
 	if cfg.Ebay.Configured() {

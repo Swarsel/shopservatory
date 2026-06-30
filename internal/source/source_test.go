@@ -349,6 +349,18 @@ func TestJmtyURL(t *testing.T) {
 	}
 }
 
+func TestRicardoURL(t *testing.T) {
+	if got := ricardoURL(SearchSpec{Query: "pokemon"}); got != "https://www.ricardo.ch/de/s/pokemon/" {
+		t.Fatalf("keyword: %q", got)
+	}
+	if got := ricardoURL(SearchSpec{Query: "magic the gathering"}); got != "https://www.ricardo.ch/de/s/magic%20the%20gathering/" {
+		t.Fatalf("multiword: %q", got)
+	}
+	full := "https://www.ricardo.ch/de/s/pokemon/?price_to=50"
+	if got := ricardoURL(SearchSpec{Query: full}); got != full {
+		t.Fatalf("full url: %q", got)
+	}
+}
 func TestAuctionetURL(t *testing.T) {
 	got := auctionetURL(SearchSpec{Query: "rolex"})
 	u, _ := url.Parse(got)
