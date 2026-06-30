@@ -119,6 +119,38 @@ const pageTemplate = `<!doctype html>
         <span class="muted" id="settings-status" style="font-size:.8rem"></span>
       </div>
     </form>
+    <h3>Change password</h3>
+    <form id="password-form">
+      <div class="row">
+        <div><label>Current password</label><input id="p-current" type="password" autocomplete="current-password"></div>
+        <div><label>New password</label><input id="p-new" type="password" autocomplete="new-password" placeholder="at least 8 characters"></div>
+      </div>
+      <div class="row">
+        <button type="submit">Change password</button>
+        <span class="muted" id="password-status" style="font-size:.8rem"></span>
+      </div>
+    </form>
+  </div>
+
+  <h2 class="fold-h" id="users-head" style="display:none">▸ Users</h2>
+  <div id="users-section" style="display:none">
+    <form id="user-form">
+      <div class="row">
+        <div><label>Name</label><input id="u-name" placeholder="optional"></div>
+        <div><label>Email</label><input id="u-email" required></div>
+        <div><label>Password</label><input id="u-password" type="password" autocomplete="new-password" placeholder="optional (for password login)"></div>
+        <div><label><input type="checkbox" id="u-admin"> Admin</label></div>
+      </div>
+      <div class="row">
+        <button type="submit" id="user-submit">Add user</button>
+        <button type="button" id="user-cancel" style="display:none">Cancel edit</button>
+        <span class="muted" id="user-status" style="font-size:.8rem"></span>
+      </div>
+    </form>
+    <table>
+      <thead><tr><th>#</th><th>Name</th><th>Email</th><th>Login</th><th>Role</th><th></th></tr></thead>
+      <tbody id="users"></tbody>
+    </table>
   </div>
 
   <h2><span id="feed-label">Recent finds</span> <span class="muted" id="feed-status" style="font-size:.8rem;font-weight:normal"></span></h2>
@@ -279,6 +311,93 @@ const pageTemplate = `<!doctype html>
         .catch(function(){ status.textContent = 'could not save'; });
     });
 
+    function postForm(url, params, statusEl, okText, onok){
+      if (statusEl) statusEl.textContent = 'saving…';
+      return fetch(url, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:params.toString()})
+        .then(function(r){
+          if (r.status===204 || r.ok){ if(statusEl) statusEl.textContent = okText || 'saved'; if(onok) onok(); refresh(); }
+          else { return r.text().then(function(t){ if(statusEl) statusEl.textContent = t || 'failed'; }); }
+        }).catch(function(){ if(statusEl) statusEl.textContent = 'failed'; });
+    }
+
+    document.getElementById('password-form').addEventListener('submit', function(e){
+      e.preventDefault();
+      var f = new URLSearchParams();
+      f.set('current_password', document.getElementById('p-current').value);
+      f.set('new_password', document.getElementById('p-new').value);
+      postForm('/password', f, document.getElementById('password-status'), 'password changed', function(){
+        document.getElementById('p-current').value=''; document.getElementById('p-new').value='';
+      });
+    });
+
+    (function(){
+      var head = document.getElementById('users-head');
+      head.onclick = function(){
+        var sec = document.getElementById('users-section');
+        var open = sec.style.display !== 'none';
+        sec.style.display = open ? 'none' : '';
+        head.textContent = (open ? '▸' : '▾') + ' Users';
+      };
+    })();
+
+    var meId = 0, editUserID = 0;
+    function renderMe(me){
+      meId = me.id || 0;
+      var head = document.getElementById('users-head');
+      if (me.isAdmin) { head.style.display = ''; }
+      else { head.style.display = 'none'; document.getElementById('users-section').style.display = 'none'; }
+    }
+    function resetUserForm(){
+      editUserID = 0;
+      document.getElementById('user-form').reset();
+      document.getElementById('user-submit').textContent = 'Add user';
+      document.getElementById('user-cancel').style.display = 'none';
+      document.getElementById('u-password').placeholder = 'optional (for password login)';
+      document.getElementById('user-status').textContent = '';
+    }
+    function startUserEdit(u){
+      editUserID = u.id;
+      document.getElementById('u-name').value = u.name || '';
+      document.getElementById('u-email').value = u.email || '';
+      document.getElementById('u-password').value = '';
+      document.getElementById('u-password').placeholder = 'leave blank to keep current';
+      document.getElementById('u-admin').checked = !!u.isAdmin;
+      document.getElementById('user-submit').textContent = 'Update user #' + u.id;
+      document.getElementById('user-cancel').style.display = '';
+      window.scrollTo({top: document.getElementById('users-head').offsetTop, behavior:'smooth'});
+    }
+    document.getElementById('user-cancel').onclick = resetUserForm;
+    function renderUsers(list){
+      var tb = document.getElementById('users'); tb.replaceChildren();
+      list.forEach(function(u){
+        var tr = el('tr');
+        tr.appendChild(el('td', null, String(u.id)));
+        tr.appendChild(el('td', null, u.name));
+        tr.appendChild(el('td', null, u.email));
+        var login = []; if (u.hasPassword) login.push('password'); if (u.oidc) login.push('SSO');
+        tr.appendChild(el('td', 'muted', login.length ? login.join(' + ') : '—'));
+        var role = el('td'); role.appendChild(el('span','pill', u.isAdmin ? 'admin' : 'user')); tr.appendChild(role);
+        var act = el('td','actions');
+        act.appendChild(btn('edit', function(){ startUserEdit(u); }));
+        if (u.id !== meId) {
+          act.appendChild(btn('delete', function(){ if (confirm('Delete user ' + u.email + ' and all their data?')) action('/admin/users/' + u.id + '/delete'); }));
+        }
+        tr.appendChild(act); tb.appendChild(tr);
+      });
+    }
+    document.getElementById('user-form').addEventListener('submit', function(e){
+      e.preventDefault();
+      var email = document.getElementById('u-email').value.trim();
+      if (!email) { document.getElementById('user-status').textContent = 'email is required'; return; }
+      var f = new URLSearchParams();
+      f.set('name', document.getElementById('u-name').value.trim());
+      f.set('email', email);
+      var pw = document.getElementById('u-password').value; if (pw) f.set('password', pw);
+      if (document.getElementById('u-admin').checked) f.set('admin', 'on');
+      var url = editUserID ? '/admin/users/' + editUserID + '/update' : '/admin/users';
+      postForm(url, f, document.getElementById('user-status'), editUserID ? 'updated' : 'added', resetUserForm);
+    });
+
     document.getElementById('monitor-form').addEventListener('submit', function(e){
       e.preventDefault();
       var inp = document.getElementById('m-url'); var u = inp.value.trim();
@@ -403,7 +522,7 @@ const pageTemplate = `<!doctype html>
     function refresh() {
       return fetch('/api/state' + (showAll ? '?all=1' : ''), {headers:{'Accept':'application/json'}})
         .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
-        .then(function(s){ renderSearches(s.searches||[]); renderMonitors(s.monitors||[]); renderFeed(s.listings||[]); renderSettings(s.settings||{}); })
+        .then(function(s){ renderSearches(s.searches||[]); renderMonitors(s.monitors||[]); renderFeed(s.listings||[]); renderSettings(s.settings||{}); renderMe(s.me||{}); renderUsers(s.users||[]); })
         .catch(function(){});
     }
 

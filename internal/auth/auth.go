@@ -30,13 +30,12 @@ const (
 var ErrInvalidLogin = errors.New("invalid email or password")
 
 type Options struct {
-	Issuer        string
-	ClientID      string
-	ClientSecret  string
-	OIDCName      string
-	BaseURL       string
-	SessionTTL    time.Duration
-	DefaultUserID int64
+	Issuer       string
+	ClientID     string
+	ClientSecret string
+	OIDCName     string
+	BaseURL      string
+	SessionTTL   time.Duration
 }
 
 type Authenticator struct {
@@ -44,7 +43,6 @@ type Authenticator struct {
 	log           *slog.Logger
 	sessionTTL    time.Duration
 	secureCookies bool
-	defaultUserID int64
 
 	provider *oidc.Provider
 	verifier *oidc.IDTokenVerifier
@@ -57,7 +55,6 @@ func New(ctx context.Context, st *store.Store, opts Options, log *slog.Logger) (
 		store:         st,
 		log:           log,
 		sessionTTL:    opts.SessionTTL,
-		defaultUserID: opts.DefaultUserID,
 		secureCookies: strings.HasPrefix(opts.BaseURL, "https://"),
 		oidcName:      opts.OIDCName,
 	}
@@ -144,27 +141,34 @@ func (a *Authenticator) RequireSession(next http.Handler) http.Handler {
 
 func (a *Authenticator) APIAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.verifier == nil {
-			a.serveAs(next, w, r, a.defaultUserID)
-			return
+		if c, err := r.Cookie(sessionCookie); err == nil {
+			if uid, ok := a.store.SessionUserID(r.Context(), c.Value); ok {
+				a.serveAs(next, w, r, uid)
+				return
+			}
 		}
 		raw := bearerToken(r)
 		if raw == "" {
-			http.Error(w, "missing bearer token", http.StatusUnauthorized)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		tok, err := a.verifier.Verify(r.Context(), raw)
-		if err != nil {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
+		if a.verifier != nil {
+			if tok, err := a.verifier.Verify(r.Context(), raw); err == nil {
+				u, err := a.userFromToken(r.Context(), tok)
+				if err != nil {
+					a.log.Error("auth: resolve user", "err", err)
+					http.Error(w, "user resolution failed", http.StatusInternalServerError)
+					return
+				}
+				a.serveAs(next, w, r, u.ID)
+				return
+			}
+		}
+		if uid, ok := a.store.SessionUserID(r.Context(), raw); ok {
+			a.serveAs(next, w, r, uid)
 			return
 		}
-		u, err := a.userFromToken(r.Context(), tok)
-		if err != nil {
-			a.log.Error("auth: resolve user", "err", err)
-			http.Error(w, "user resolution failed", http.StatusInternalServerError)
-			return
-		}
-		a.serveAs(next, w, r, u.ID)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
 

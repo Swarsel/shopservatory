@@ -57,7 +57,7 @@ func run() error {
 	}
 	defer st.Close()
 
-	var apiFallbackID int64
+	var seededAny bool
 	for _, acc := range cfg.Users {
 		if acc.Email == "" || acc.Password == "" {
 			log.Warn("skipping seeded user without email/password", "email", acc.Email)
@@ -71,9 +71,7 @@ func run() error {
 		if serr != nil {
 			return fmt.Errorf("seed user %q: %w", acc.Email, serr)
 		}
-		if apiFallbackID == 0 {
-			apiFallbackID = u.ID
-		}
+		seededAny = true
 		if created {
 			if err := st.UpdateUserSettings(ctx, u.ID, acc.Currency, acc.SearchInterval.Duration, acc.MonitorInterval.Duration); err != nil {
 				return fmt.Errorf("seed settings for %q: %w", acc.Email, err)
@@ -84,9 +82,14 @@ func run() error {
 				}
 			}
 		}
-		log.Info("seeded login account", "id", u.ID, "email", u.Email, "created", created)
+		if acc.Admin {
+			if err := st.SetAdmin(ctx, u.ID, true); err != nil {
+				return fmt.Errorf("set admin for %q: %w", acc.Email, err)
+			}
+		}
+		log.Info("seeded login account", "id", u.ID, "email", u.Email, "created", created, "admin", acc.Admin)
 	}
-	if apiFallbackID == 0 && !cfg.OIDC.Enabled() {
+	if !seededAny && !cfg.OIDC.Enabled() {
 		log.Warn("no login accounts configured and OIDC disabled: nobody can sign in (set [[users]] or [oidc])")
 	}
 
@@ -112,12 +115,11 @@ func run() error {
 	})
 
 	authn, err := auth.New(ctx, st, auth.Options{
-		Issuer:        cfg.OIDC.Issuer,
-		ClientID:      cfg.OIDC.ClientID,
-		ClientSecret:  cfg.OIDC.ClientSecret,
-		OIDCName:      cfg.OIDC.Label(),
-		BaseURL:       cfg.Server.BaseURL,
-		DefaultUserID: apiFallbackID,
+		Issuer:       cfg.OIDC.Issuer,
+		ClientID:     cfg.OIDC.ClientID,
+		ClientSecret: cfg.OIDC.ClientSecret,
+		OIDCName:     cfg.OIDC.Label(),
+		BaseURL:      cfg.Server.BaseURL,
 	}, log)
 	if err != nil {
 		return fmt.Errorf("init auth: %w", err)

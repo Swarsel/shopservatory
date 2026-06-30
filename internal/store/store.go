@@ -145,7 +145,10 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 	if err := s.addColumnIfMissing(ctx, "users", "search_interval_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing(ctx, "users", "monitor_interval_seconds", "INTEGER NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing(ctx, "users", "monitor_interval_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table, column, typ string) error {

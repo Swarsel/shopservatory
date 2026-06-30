@@ -35,12 +35,12 @@ func TestLoginFlow(t *testing.T) {
 	}
 	defer st.Close()
 	hash, _ := auth.HashPassword("hunter2")
-	u, _, err := st.SeedUser(ctx, "Leon", "leon@example.com", hash)
+	_, _, err = st.SeedUser(ctx, "Leon", "leon@example.com", hash)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	authn, _ := auth.New(ctx, st, auth.Options{DefaultUserID: u.ID}, log)
+	authn, _ := auth.New(ctx, st, auth.Options{}, log)
 	c, _ := source.NewClient(config.Default().Scrape, log)
 	reg := source.NewRegistry(config.Default(), c, log)
 	conv := fx.New("EUR", log)
@@ -92,6 +92,46 @@ func TestLoginFlow(t *testing.T) {
 	}
 	if _, ok := st.SessionUserID(ctx, session.Value); ok {
 		t.Fatal("session not deleted after logout")
+	}
+}
+
+func TestAPIRequiresAuth(t *testing.T) {
+	ctx := context.Background()
+	log := slog.Default()
+	st, err := store.Open(ctx, t.TempDir()+"/a.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	hash, _ := auth.HashPassword("hunter2")
+	u, _, err := st.SeedUser(ctx, "Leon", "leon@example.com", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authn, _ := auth.New(ctx, st, auth.Options{}, log)
+	c, _ := source.NewClient(config.Default().Scrape, log)
+	reg := source.NewRegistry(config.Default(), c, log)
+	conv := fx.New("EUR", log)
+	sched := scheduler.New(st, reg, notify.NewManager(log, conv), log, scheduler.Options{})
+	srv := New(st, reg, sched, conv, authn, 5*time.Minute, time.Hour, "", log)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, _ := http.Get(ts.URL + "/api/v1/state")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated /api/v1/state: status=%d, want 401", resp.StatusCode)
+	}
+
+	token, err := st.CreateSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/state", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, _ = http.DefaultClient.Do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("session-token /api/v1/state: status=%d, want 200", resp.StatusCode)
 	}
 }
 

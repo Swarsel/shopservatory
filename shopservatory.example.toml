@@ -22,6 +22,7 @@ level = "info"
 name = "admin"
 email = "admin@example.com"
 password = "change-me"
+admin = true
 # currency = "EUR"
 # search_interval = "5m"
 # monitor_interval = "1h"

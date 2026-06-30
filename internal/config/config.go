@@ -50,6 +50,7 @@ type Account struct {
 	Name     string `toml:"name"`
 	Email    string `toml:"email"`
 	Password string `toml:"password"`
+	Admin    bool   `toml:"admin"`
 
 	Currency        string   `toml:"currency"`
 	SearchInterval  Duration `toml:"search_interval"`

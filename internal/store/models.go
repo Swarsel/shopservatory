@@ -12,6 +12,7 @@ type User struct {
 	Email        string
 	OIDCSubject  string
 	PasswordHash string
+	IsAdmin      bool
 	CreatedAt    time.Time
 }
 

@@ -121,6 +121,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /monitors/{id}/delete", b(http.HandlerFunc(s.handleDeleteMonitor)))
 	mux.Handle("POST /monitors/{id}/run", b(http.HandlerFunc(s.handleRunMonitor)))
 	mux.Handle("POST /settings", b(http.HandlerFunc(s.handleSettings)))
+	mux.Handle("POST /password", b(http.HandlerFunc(s.handlePassword)))
+	mux.Handle("POST /admin/users", b(s.requireAdmin(http.HandlerFunc(s.handleAdminCreateUser))))
+	mux.Handle("POST /admin/users/{id}/update", b(s.requireAdmin(http.HandlerFunc(s.handleAdminUpdateUser))))
+	mux.Handle("POST /admin/users/{id}/delete", b(s.requireAdmin(http.HandlerFunc(s.handleAdminDeleteUser))))
 
 	a := s.auth.APIAuth
 	mux.Handle("GET /api/v1/me", a(http.HandlerFunc(s.handleAPIMe)))
@@ -171,10 +175,12 @@ type listingView struct {
 }
 
 type stateData struct {
-	Searches []searchView  `json:"searches"`
-	Listings []listingView `json:"listings"`
-	Monitors []monitorView `json:"monitors"`
-	Settings settingsView  `json:"settings"`
+	Searches []searchView    `json:"searches"`
+	Listings []listingView   `json:"listings"`
+	Monitors []monitorView   `json:"monitors"`
+	Settings settingsView    `json:"settings"`
+	Me       meView          `json:"me"`
+	Users    []adminUserView `json:"users"`
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -213,8 +219,25 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "list monitors", err)
 		return
 	}
+
+	var me meView
+	if u, err := s.store.GetUser(r.Context(), userID); err == nil {
+		me = meView{ID: u.ID, Email: u.Email, Name: u.Name, IsAdmin: u.IsAdmin}
+	}
+	var users []adminUserView
+	if me.IsAdmin {
+		if list, err := s.store.ListUsers(r.Context()); err == nil {
+			for _, u := range list {
+				users = append(users, adminUserView{
+					ID: u.ID, Name: u.Name, Email: u.Email, IsAdmin: u.IsAdmin,
+					HasPassword: u.PasswordHash != "", OIDC: u.OIDCSubject != "",
+				})
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	out := stateData{Searches: searches, Listings: listings, Monitors: monitors, Settings: settingsView{
+	out := stateData{Searches: searches, Listings: listings, Monitors: monitors, Me: me, Users: users, Settings: settingsView{
 		Currency:        settings.Currency,
 		SearchInterval:  durStr(settings.SearchInterval),
 		MonitorInterval: durStr(settings.MonitorInterval),
