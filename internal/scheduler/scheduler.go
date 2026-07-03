@@ -270,6 +270,32 @@ func formatAmount(v float64, currency string) string {
 	return fmt.Sprintf("%s %.0f", currency, v)
 }
 
+func (s *Scheduler) enrichListings(ctx context.Context, enr source.ListingEnricher, items []store.Listing) {
+	const workers = 6
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			price, saleType, ok := enr.EnrichListing(ctx, items[i].ExternalID)
+			if !ok {
+				return
+			}
+			if price > 0 {
+				items[i].Price = price
+			}
+			items[i].SaleType = saleType
+			if err := s.store.UpdateListingMarket(ctx, items[i].ID, items[i].Price, items[i].SaleType); err != nil {
+				s.log.Error("scheduler: enrich listing", "listing", items[i].ID, "err", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
 func (s *Scheduler) due(se store.Search, now time.Time) bool {
 	if se.LastRunAt == nil {
 		return true
@@ -320,28 +346,34 @@ func (s *Scheduler) poll(ctx context.Context, se store.Search) {
 	}
 
 	seenAt := time.Now()
-	newCount := 0
+	var fresh []store.Listing
 	for _, l := range listings {
 		stored, isNew, err := s.store.RecordListing(ctx, se.ID, se.Source, l, seenAt)
 		if err != nil {
 			s.log.Error("scheduler: record listing", "search", se.ID, "err", err)
 			continue
 		}
-		if !isNew {
-			continue
+		if isNew {
+			fresh = append(fresh, stored)
 		}
-		newCount++
-		if firstRun {
-			continue
-		}
-		s.notifier.Dispatch(ctx, targets, notify.Event{
-			Search:       se,
-			Source:       src.DisplayName(),
-			Listing:      stored,
-			UserCurrency: userCurrency,
-		})
-		if err := s.store.MarkNotified(ctx, stored.ID); err != nil {
-			s.log.Error("scheduler: mark notified", "listing", stored.ID, "err", err)
+	}
+	newCount := len(fresh)
+
+	if enr, ok := src.(source.ListingEnricher); ok {
+		s.enrichListings(pollCtx, enr, fresh)
+	}
+
+	if !firstRun {
+		for _, stored := range fresh {
+			s.notifier.Dispatch(ctx, targets, notify.Event{
+				Search:       se,
+				Source:       src.DisplayName(),
+				Listing:      stored,
+				UserCurrency: userCurrency,
+			})
+			if err := s.store.MarkNotified(ctx, stored.ID); err != nil {
+				s.log.Error("scheduler: mark notified", "listing", stored.ID, "err", err)
+			}
 		}
 	}
 

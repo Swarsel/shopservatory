@@ -721,7 +721,7 @@ func orEmptyMap(m map[string]string) map[string]string {
 }
 
 func priceString(price float64, currency string) string {
-	if price == 0 && currency == "" {
+	if price <= 0 {
 		return ""
 	}
 	if currency == "" {

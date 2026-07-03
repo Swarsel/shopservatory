@@ -111,7 +111,7 @@ func (c *Converter) ConvertTo(amount float64, from, to string) (float64, bool) {
 
 func (c *Converter) FormatFor(amount float64, from, to string) string {
 	to = strings.ToUpper(strings.TrimSpace(to))
-	if to == "" || strings.EqualFold(from, to) {
+	if amount <= 0 || to == "" || strings.EqualFold(from, to) {
 		return ""
 	}
 	v, ok := c.ConvertTo(amount, from, to)

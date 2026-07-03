@@ -382,6 +382,11 @@ func (s *Store) MarkNotified(ctx context.Context, id int64) error {
 	return err
 }
 
+func (s *Store) UpdateListingMarket(ctx context.Context, id int64, price float64, saleType string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE listings SET price = ?, sale_type = ? WHERE id = ?`, price, saleType, id)
+	return err
+}
+
 func (s *Store) RecentListings(ctx context.Context, userID int64, limit int) ([]Listing, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT l.id, l.search_id, l.source, l.external_id, l.title, l.price, l.currency, l.url, l.image_url, l.sale_type, l.extra, l.first_seen, l.listed_at, l.notified

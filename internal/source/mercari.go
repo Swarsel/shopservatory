@@ -114,9 +114,7 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 	listings := make([]Listing, 0, len(out.Items))
 	for _, it := range out.Items {
 		price, _ := strconv.ParseFloat(it.Price, 64)
-		saleType := ""
-		if it.IsNoPrice || it.Price == "99999999" {
-			saleType = "auction"
+		if it.IsNoPrice || isSentinelPrice(it.Price) {
 			price = 0
 		}
 		var thumb string
@@ -138,15 +136,70 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 			Currency:   "JPY",
 			URL:        itemURL,
 			ImageURL:   thumb,
-			SaleType:   saleType,
 			ListedAt:   listedAt,
 		})
 	}
 	return listings, nil
 }
 
+func (m *mercari) EnrichListing(ctx context.Context, externalID string) (float64, string, bool) {
+	a, ok := m.auctionInfo(ctx, externalID)
+	if !ok {
+		return 0, "", false
+	}
+	return a.price(), "auction", true
+}
+
+type mercariAuction struct {
+	InitialPrice json.Number `json:"initial_price"`
+	HighestBid   json.Number `json:"highest_bid"`
+	TotalBids    int         `json:"total_bids"`
+	State        string      `json:"state"`
+}
+
+func (a mercariAuction) price() float64 {
+	if v, _ := a.HighestBid.Float64(); v > 0 {
+		return v
+	}
+	v, _ := a.InitialPrice.Float64()
+	return v
+}
+
+func (m *mercari) auctionInfo(ctx context.Context, id string) (mercariAuction, bool) {
+	endpoint := "https://api.mercari.jp/items/get?id=" + id + "&include_auction=true"
+	dpop, err := mercariDPoP(http.MethodGet, endpoint)
+	if err != nil {
+		return mercariAuction{}, false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return mercariAuction{}, false
+	}
+	req.Header.Set("X-Platform", "web")
+	req.Header.Set("DPoP", dpop)
+	req.Header.Set("Accept", "application/json")
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return mercariAuction{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return mercariAuction{}, false
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	var env struct {
+		Data struct {
+			Auction *mercariAuction `json:"auction_info"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &env) != nil || env.Data.Auction == nil {
+		return mercariAuction{}, false
+	}
+	return *env.Data.Auction, true
+}
+
 func (m *mercari) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
-	endpoint := "https://api.mercari.jp/items/get?id=" + lastPathSegment(rawURL)
+	endpoint := "https://api.mercari.jp/items/get?id=" + lastPathSegment(rawURL) + "&include_auction=true"
 	dpop, err := mercariDPoP(http.MethodGet, endpoint)
 	if err != nil {
 		return ItemSnapshot{}, fmt.Errorf("mercari: dpop: %w", err)
@@ -172,10 +225,11 @@ func (m *mercari) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, er
 	}
 	var env struct {
 		Data struct {
-			Name       string      `json:"name"`
-			Price      json.Number `json:"price"`
-			Status     string      `json:"status"`
-			Thumbnails []string    `json:"thumbnails"`
+			Name       string          `json:"name"`
+			Price      json.Number     `json:"price"`
+			Status     string          `json:"status"`
+			Thumbnails []string        `json:"thumbnails"`
+			Auction    *mercariAuction `json:"auction_info"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -186,11 +240,18 @@ func (m *mercari) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, er
 	if env.Data.Status != "" && env.Data.Status != "on_sale" {
 		status = "sold"
 	}
+	saleType := ""
+	if env.Data.Auction != nil {
+		saleType = "auction"
+		if p := env.Data.Auction.price(); p > 0 {
+			price = p
+		}
+	}
 	var thumb string
 	if len(env.Data.Thumbnails) > 0 {
 		thumb = env.Data.Thumbnails[0]
 	}
-	return ItemSnapshot{Title: env.Data.Name, Price: price, Currency: "JPY", ImageURL: thumb, Status: status}, nil
+	return ItemSnapshot{Title: env.Data.Name, Price: price, Currency: "JPY", ImageURL: thumb, Status: status, SaleType: saleType}, nil
 }
 
 func mercariDPoP(method, htu string) (string, error) {
@@ -237,6 +298,18 @@ func mercariDPoP(method, htu string) (string, error) {
 	r.FillBytes(sig[:32])
 	s.FillBytes(sig[32:])
 	return signingInput + "." + b64url(sig), nil
+}
+
+func isSentinelPrice(s string) bool {
+	if len(s) < 7 {
+		return false
+	}
+	for _, r := range s {
+		if r != '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

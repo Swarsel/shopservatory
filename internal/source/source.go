@@ -66,6 +66,10 @@ type ItemMonitor interface {
 	Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error)
 }
 
+type ListingEnricher interface {
+	EnrichListing(ctx context.Context, externalID string) (price float64, saleType string, ok bool)
+}
+
 type Client struct {
 	http      *http.Client
 	userAgent string

@@ -69,10 +69,10 @@ func (m *Manager) Dispatch(ctx context.Context, targets []store.NotificationTarg
 }
 
 func formatPrice(price float64, currency string) string {
+	if price <= 0 {
+		return ""
+	}
 	if currency == "" {
-		if price == 0 {
-			return ""
-		}
 		return fmt.Sprintf("%.0f", price)
 	}
 	return fmt.Sprintf("%s %.0f", currency, price)

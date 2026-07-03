@@ -372,6 +372,22 @@ func TestAuctionetURL(t *testing.T) {
 		t.Fatalf("full url: %q", got)
 	}
 }
+func TestIsSentinelPrice(t *testing.T) {
+	cases := map[string]bool{
+		"9999999":  true,
+		"99999999": true,
+		"999999":   false,
+		"5400":     false,
+		"9999990":  false,
+		"":         false,
+	}
+	for in, want := range cases {
+		if got := isSentinelPrice(in); got != want {
+			t.Fatalf("isSentinelPrice(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestRakumaURL(t *testing.T) {
 	got := rakumaURL(SearchSpec{Query: "murakami"})
 	u, _ := url.Parse(got)
