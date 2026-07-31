@@ -60,6 +60,7 @@ type ItemSnapshot struct {
 	ImageURL string
 	Status   string
 	SaleType string
+	EndsAt   time.Time
 }
 
 type ItemMonitor interface {
@@ -67,7 +68,7 @@ type ItemMonitor interface {
 }
 
 type ListingEnricher interface {
-	EnrichListing(ctx context.Context, externalID string) (price float64, saleType string, ok bool)
+	EnrichListing(ctx context.Context, externalID string) (price float64, saleType string, extra map[string]string, ok bool)
 }
 
 type Client struct {

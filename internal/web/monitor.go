@@ -24,6 +24,7 @@ type monitorView struct {
 	PriceApprox string           `json:"priceApprox"`
 	Status      string           `json:"status"`
 	SaleType    string           `json:"saleType"`
+	Ends        string           `json:"ends,omitempty"`
 	Interval    string           `json:"interval"`
 	LastChecked string           `json:"lastChecked"`
 	History     []pricePointView `json:"history"`
@@ -54,11 +55,16 @@ func (s *Server) monitorViews(ctx context.Context, userID int64, target string) 
 		if m.LastCheckedAt != nil {
 			checked = m.LastCheckedAt.Format("2006-01-02 15:04")
 		}
+		ends := ""
+		if m.EndsAt != nil {
+			ends = m.EndsAt.UTC().Format(time.RFC3339)
+		}
 		out = append(out, monitorView{
 			ID: m.ID, Source: m.Source, Title: m.Title, URL: m.URL, ImageURL: m.ImageURL,
 			Price:       priceString(m.LastPrice, m.Currency),
 			PriceApprox: s.fx.FormatFor(m.LastPrice, m.Currency, target),
-			Status:      m.Status, SaleType: m.SaleType, Interval: m.Interval.String(), LastChecked: checked, History: points,
+			Status:      m.Status, SaleType: m.SaleType, Ends: ends,
+			Interval: m.Interval.String(), LastChecked: checked, History: points,
 		})
 	}
 	return out, nil
@@ -109,6 +115,9 @@ func (s *Server) handleAddMonitor(w http.ResponseWriter, r *http.Request) {
 		Interval:   interval,
 		Enabled:    true,
 	}
+	if t, err := time.Parse(time.RFC3339, r.FormValue("ends")); err == nil {
+		m.EndsAt = &t
+	}
 
 	if mon, ok := srcObj.(source.ItemMonitor); ok && (m.Title == "" || r.FormValue("price") == "") {
 		if snap, err := mon.Snapshot(r.Context(), rawURL); err == nil {
@@ -129,6 +138,9 @@ func (s *Server) handleAddMonitor(w http.ResponseWriter, r *http.Request) {
 			}
 			if snap.Status != "" {
 				m.Status = snap.Status
+			}
+			if !snap.EndsAt.IsZero() {
+				m.EndsAt = &snap.EndsAt
 			}
 		} else if m.Title == "" {
 			http.Error(w, "could not fetch that item (it may be unsupported or removed)", http.StatusBadGateway)

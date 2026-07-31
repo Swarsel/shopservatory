@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS monitored_items (
     enabled          INTEGER NOT NULL DEFAULT 1,
     created_at       INTEGER NOT NULL,
     last_checked_at  INTEGER,
+    ends_at          INTEGER NOT NULL DEFAULT 0,
     UNIQUE(user_id, source, external_id)
 );
 
@@ -146,6 +147,9 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "users", "monitor_interval_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "monitored_items", "ends_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
@@ -382,8 +386,12 @@ func (s *Store) MarkNotified(ctx context.Context, id int64) error {
 	return err
 }
 
-func (s *Store) UpdateListingMarket(ctx context.Context, id int64, price float64, saleType string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE listings SET price = ?, sale_type = ? WHERE id = ?`, price, saleType, id)
+func (s *Store) UpdateListingMarket(ctx context.Context, id int64, price float64, saleType string, extra map[string]string) error {
+	encoded, err := json.Marshal(orEmpty(extra))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE listings SET price = ?, sale_type = ?, extra = ? WHERE id = ?`, price, saleType, string(encoded), id)
 	return err
 }
 

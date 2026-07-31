@@ -232,13 +232,15 @@ func (s *Scheduler) pollMonitor(ctx context.Context, m store.MonitoredItem) {
 	if snap.Title != "" {
 		title = snap.Title
 	}
+	listing := store.Listing{Title: title, URL: m.URL, ImageURL: image, Price: snap.Price, Currency: currency}
+	if !snap.EndsAt.IsZero() {
+		listing.Extra = map[string]string{"ends": snap.EndsAt.UTC().Format(time.RFC3339)}
+	}
 	s.notifier.Dispatch(ctx, targets, notify.Event{
 		Source:       src.DisplayName(),
 		Note:         note,
 		UserCurrency: s.store.UserCurrency(ctx, m.UserID),
-		Listing: store.Listing{
-			Title: title, URL: m.URL, ImageURL: image, Price: snap.Price, Currency: currency,
-		},
+		Listing:      listing,
 	})
 }
 
@@ -280,7 +282,7 @@ func (s *Scheduler) enrichListings(ctx context.Context, enr source.ListingEnrich
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			price, saleType, ok := enr.EnrichListing(ctx, items[i].ExternalID)
+			price, saleType, extra, ok := enr.EnrichListing(ctx, items[i].ExternalID)
 			if !ok {
 				return
 			}
@@ -288,7 +290,15 @@ func (s *Scheduler) enrichListings(ctx context.Context, enr source.ListingEnrich
 				items[i].Price = price
 			}
 			items[i].SaleType = saleType
-			if err := s.store.UpdateListingMarket(ctx, items[i].ID, items[i].Price, items[i].SaleType); err != nil {
+			if len(extra) > 0 {
+				if items[i].Extra == nil {
+					items[i].Extra = map[string]string{}
+				}
+				for k, v := range extra {
+					items[i].Extra[k] = v
+				}
+			}
+			if err := s.store.UpdateListingMarket(ctx, items[i].ID, items[i].Price, items[i].SaleType, items[i].Extra); err != nil {
 				s.log.Error("scheduler: enrich listing", "listing", items[i].ID, "err", err)
 			}
 		}(i)

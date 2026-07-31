@@ -172,6 +172,43 @@ const pageTemplate = `<!doctype html>
 
     function el(tag, cls, text) { var e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
 
+    function timeLeft(ends) {
+      if (!ends) return '';
+      var d = new Date(ends);
+      if (isNaN(d)) return '';
+      var mins = Math.floor((d - Date.now()) / 60000);
+      if (mins <= 0) return 'ended';
+      var days = Math.floor(mins / 1440), hours = Math.floor((mins % 1440) / 60);
+      if (days > 0) return days + 'd ' + hours + 'h left';
+      if (hours > 0) return hours + 'h ' + (mins % 60) + 'm left';
+      return mins + 'm left';
+    }
+
+    function timeLeftSec(ends) {
+      if (!ends) return '';
+      var d = new Date(ends);
+      if (isNaN(d)) return '';
+      var secs = Math.floor((d - Date.now()) / 1000);
+      if (secs <= 0) return 'ended';
+      var days = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60;
+      if (days > 0) return days + 'd ' + h + 'h ' + m + 'm ' + s + 's left';
+      if (h > 0) return h + 'h ' + m + 'm ' + s + 's left';
+      if (m > 0) return m + 'm ' + s + 's left';
+      return s + 's left';
+    }
+
+    function endDateLabel(ends) {
+      var d = new Date(ends);
+      if (isNaN(d)) return '';
+      function p(n){ return (n < 10 ? '0' : '') + n; }
+      return 'ends ' + p(d.getDate()) + '.' + p(d.getMonth()+1) + '.' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+
+    function tickCountdowns() {
+      var els = document.querySelectorAll('[data-ends]');
+      for (var i = 0; i < els.length; i++) els[i].textContent = timeLeftSec(els[i].getAttribute('data-ends'));
+    }
+
     function action(url) { return fetch(url, {method:'POST'}).then(refresh).catch(function(){}); }
 
     function btn(label, fn) { var b=el('button',null,label); b.type='button'; b.onclick=fn; return b; }
@@ -427,7 +464,14 @@ const pageTemplate = `<!doctype html>
         if (m.imageUrl) { var im = el('img','mthumb'); im.src='/img?u='+encodeURIComponent(m.imageUrl); im.loading='lazy'; im.onerror=function(){ im.style.display='none'; }; itd.appendChild(im); }
         var a = el('a','title'); a.href=m.url; a.target='_blank'; a.rel='noopener'; a.textContent = m.title || m.url; itd.appendChild(a); tr.appendChild(itd);
         var ptd = el('td'); ptd.textContent = m.price || ''; if (m.priceApprox) { ptd.appendChild(el('span','approx','  '+m.priceApprox)); } tr.appendChild(ptd);
-        var std = el('td'); std.appendChild(el('span','status-'+(m.status||'active'), m.status||'active')); tr.appendChild(std);
+        var std = el('td'); std.appendChild(el('span','status-'+(m.status||'active'), m.status||'active'));
+        var mtl = timeLeftSec(m.ends);
+        if (mtl) {
+          var mts=el('div','muted',mtl); mts.style.fontSize='.75rem'; mts.setAttribute('data-ends', m.ends);
+          mts.title = endDateLabel(m.ends);
+          std.appendChild(mts);
+        }
+        tr.appendChild(std);
         tr.appendChild(el('td','muted', m.interval || ''));
         tr.appendChild(el('td','muted', m.lastChecked));
         var act = el('td','actions');
@@ -474,7 +518,11 @@ const pageTemplate = `<!doctype html>
       var body = el('div','body');
       var title = el('a','title'); title.href=item.url; title.target='_blank'; title.rel='noopener'; title.textContent=item.title;
       body.appendChild(title);
-      if (item.saleType === 'auction') { var ap=el('span','pill','auction'); ap.style.marginRight='.3rem'; body.appendChild(ap); }
+      if (item.saleType === 'auction') {
+        var ap=el('span','pill','auction'); ap.style.marginRight='.3rem'; body.appendChild(ap);
+        var tl = timeLeft(item.ends);
+        if (tl) { var ts=el('span','muted',tl); ts.style.fontSize='.75rem'; ts.title = endDateLabel(item.ends); body.appendChild(ts); }
+      }
       var price = el('div','muted'); price.textContent = item.price || '';
       if (item.priceApprox) { var ap=el('span','approx','  '+item.priceApprox); price.appendChild(ap); }
       body.appendChild(price);
@@ -491,7 +539,7 @@ const pageTemplate = `<!doctype html>
       var f = new URLSearchParams();
       f.set('source', item.source||''); f.set('external_id', item.externalId||'');
       f.set('url', item.url||''); f.set('title', item.title||''); f.set('image_url', item.imageUrl||'');
-      f.set('currency', item.currency||''); f.set('sale_type', item.saleType||'');
+      f.set('currency', item.currency||''); f.set('sale_type', item.saleType||''); f.set('ends', item.ends||'');
       f.set('price', item.priceValue!=null ? String(item.priceValue) : '');
       if (btn) { btn.disabled = true; btn.textContent = '…'; }
       fetch('/monitors', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
@@ -536,6 +584,7 @@ const pageTemplate = `<!doctype html>
 
     refresh();
     setInterval(refresh, INTERVAL);
+    setInterval(tickCountdowns, 1000);
   })();
   </script>
 </body>

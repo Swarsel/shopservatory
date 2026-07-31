@@ -14,13 +14,17 @@ func (s *Store) AddMonitor(ctx context.Context, m MonitoredItem) (int64, error) 
 		interval = 3600
 	}
 	now := time.Now().Unix()
+	var endsAt int64
+	if m.EndsAt != nil {
+		endsAt = m.EndsAt.Unix()
+	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO monitored_items
-		   (user_id, source, external_id, url, title, image_url, currency, sale_type, last_price, status, interval_seconds, enabled, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+		   (user_id, source, external_id, url, title, image_url, currency, sale_type, last_price, status, interval_seconds, enabled, created_at, ends_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		 ON CONFLICT(user_id, source, external_id) DO NOTHING`,
 		m.UserID, m.Source, m.ExternalID, m.URL, m.Title, m.ImageURL, m.Currency, m.SaleType,
-		m.LastPrice, statusOrActive(m.Status), interval, now)
+		m.LastPrice, statusOrActive(m.Status), interval, now, endsAt)
 	if err != nil {
 		return 0, err
 	}
@@ -83,15 +87,22 @@ func (s *Store) RecordMonitorCheck(ctx context.Context, id int64, snap source.It
 		id, snap.Price, statusOrActive(snap.Status), observedAt.Unix()); err != nil {
 		return err
 	}
+	var endsAt int64
+	if !snap.EndsAt.IsZero() {
+		endsAt = snap.EndsAt.Unix()
+	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE monitored_items
 		    SET last_price = ?, status = ?, last_checked_at = ?,
 		        title = CASE WHEN ? != '' THEN ? ELSE title END,
 		        image_url = CASE WHEN ? != '' THEN ? ELSE image_url END,
-		        currency = CASE WHEN ? != '' THEN ? ELSE currency END
+		        currency = CASE WHEN ? != '' THEN ? ELSE currency END,
+		        sale_type = CASE WHEN ? != '' THEN ? ELSE sale_type END,
+		        ends_at = CASE WHEN ? > 0 THEN ? ELSE ends_at END
 		  WHERE id = ?`,
 		snap.Price, statusOrActive(snap.Status), observedAt.Unix(),
-		snap.Title, snap.Title, snap.ImageURL, snap.ImageURL, snap.Currency, snap.Currency, id)
+		snap.Title, snap.Title, snap.ImageURL, snap.ImageURL, snap.Currency, snap.Currency,
+		snap.SaleType, snap.SaleType, endsAt, endsAt, id)
 	return err
 }
 
@@ -119,7 +130,7 @@ func (s *Store) PriceHistory(ctx context.Context, monitorID int64) ([]PricePoint
 }
 
 const monitorSelect = `SELECT id, user_id, source, external_id, url, title, image_url, currency, sale_type,
-	last_price, status, interval_seconds, enabled, created_at, last_checked_at FROM monitored_items`
+	last_price, status, interval_seconds, enabled, created_at, last_checked_at, ends_at FROM monitored_items`
 
 func scanMonitors(rows *sql.Rows) ([]MonitoredItem, error) {
 	var out []MonitoredItem
@@ -138,16 +149,21 @@ func scanMonitor(sc interface{ Scan(...any) error }) (MonitoredItem, error) {
 		m       MonitoredItem
 		seconds int64
 		checked sql.NullInt64
+		endsAt  int64
 	)
 	if err := sc.Scan(&m.ID, &m.UserID, &m.Source, &m.ExternalID, &m.URL, &m.Title, &m.ImageURL,
 		&m.Currency, &m.SaleType, &m.LastPrice, &m.Status, &seconds, asBool(&m.Enabled),
-		asTime(&m.CreatedAt), &checked); err != nil {
+		asTime(&m.CreatedAt), &checked, &endsAt); err != nil {
 		return MonitoredItem{}, err
 	}
 	m.Interval = time.Duration(seconds) * time.Second
 	if checked.Valid {
 		t := time.Unix(checked.Int64, 0)
 		m.LastCheckedAt = &t
+	}
+	if endsAt > 0 {
+		t := time.Unix(endsAt, 0)
+		m.EndsAt = &t
 	}
 	return m, nil
 }

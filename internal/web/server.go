@@ -171,6 +171,7 @@ type listingView struct {
 	URL         string  `json:"url"`
 	ImageURL    string  `json:"imageUrl"`
 	SaleType    string  `json:"saleType"`
+	Ends        string  `json:"ends,omitempty"`
 	Seen        string  `json:"seen"`
 }
 
@@ -408,6 +409,7 @@ func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int
 		out = append(out, listingView{
 			Source: l.Source, SearchID: l.SearchID, ExternalID: l.ExternalID,
 			Title: l.Title, URL: l.URL, ImageURL: l.ImageURL, SaleType: l.SaleType,
+			Ends:        l.Extra["ends"],
 			Price:       priceString(l.Price, l.Currency),
 			PriceValue:  l.Price,
 			Currency:    l.Currency,

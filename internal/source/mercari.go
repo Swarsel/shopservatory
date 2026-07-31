@@ -142,19 +142,28 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 	return listings, nil
 }
 
-func (m *mercari) EnrichListing(ctx context.Context, externalID string) (float64, string, bool) {
+func (m *mercari) EnrichListing(ctx context.Context, externalID string) (float64, string, map[string]string, bool) {
 	a, ok := m.auctionInfo(ctx, externalID)
 	if !ok {
-		return 0, "", false
+		return 0, "", nil, false
 	}
-	return a.price(), "auction", true
+	return a.price(), "auction", a.extra(), true
 }
 
 type mercariAuction struct {
-	InitialPrice json.Number `json:"initial_price"`
-	HighestBid   json.Number `json:"highest_bid"`
-	TotalBids    int         `json:"total_bids"`
-	State        string      `json:"state"`
+	InitialPrice    json.Number `json:"initial_price"`
+	HighestBid      json.Number `json:"highest_bid"`
+	TotalBids       int         `json:"total_bids"`
+	State           string      `json:"state"`
+	ExpectedEndTime int64       `json:"expected_end_time"`
+}
+
+func (a mercariAuction) extra() map[string]string {
+	extra := map[string]string{"bids": strconv.Itoa(a.TotalBids)}
+	if a.ExpectedEndTime > 0 {
+		extra["ends"] = time.Unix(a.ExpectedEndTime, 0).UTC().Format(time.RFC3339)
+	}
+	return extra
 }
 
 func (a mercariAuction) price() float64 {
@@ -241,17 +250,21 @@ func (m *mercari) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, er
 		status = "sold"
 	}
 	saleType := ""
+	var endsAt time.Time
 	if env.Data.Auction != nil {
 		saleType = "auction"
 		if p := env.Data.Auction.price(); p > 0 {
 			price = p
+		}
+		if env.Data.Auction.ExpectedEndTime > 0 {
+			endsAt = time.Unix(env.Data.Auction.ExpectedEndTime, 0)
 		}
 	}
 	var thumb string
 	if len(env.Data.Thumbnails) > 0 {
 		thumb = env.Data.Thumbnails[0]
 	}
-	return ItemSnapshot{Title: env.Data.Name, Price: price, Currency: "JPY", ImageURL: thumb, Status: status, SaleType: saleType}, nil
+	return ItemSnapshot{Title: env.Data.Name, Price: price, Currency: "JPY", ImageURL: thumb, Status: status, SaleType: saleType, EndsAt: endsAt}, nil
 }
 
 func mercariDPoP(method, htu string) (string, error) {

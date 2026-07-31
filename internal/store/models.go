@@ -73,6 +73,7 @@ type MonitoredItem struct {
 	Enabled       bool
 	CreatedAt     time.Time
 	LastCheckedAt *time.Time
+	EndsAt        *time.Time
 }
 
 type PricePoint struct {

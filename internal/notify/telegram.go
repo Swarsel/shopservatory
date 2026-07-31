@@ -71,12 +71,37 @@ func (t *Telegram) format(ev Event) string {
 		}
 		fmt.Fprintf(&b, "💴 %s\n", html.EscapeString(line))
 	}
+	if left := auctionTimeLeft(ev.Listing.Extra["ends"], time.Now()); left != "" {
+		fmt.Fprintf(&b, "⏳ %s\n", html.EscapeString(left))
+	}
 	if ev.Note != "" {
 		fmt.Fprintf(&b, "%s", html.EscapeString(ev.Note))
 		return b.String()
 	}
 	fmt.Fprintf(&b, "🔎 query: <i>%s</i>", html.EscapeString(ev.Search.Query))
 	return b.String()
+}
+
+func auctionTimeLeft(ends string, now time.Time) string {
+	end, err := time.Parse(time.RFC3339, ends)
+	if err != nil {
+		return ""
+	}
+	left := end.Sub(now)
+	if left <= 0 {
+		return "auction ended"
+	}
+	days := int(left.Hours()) / 24
+	hours := int(left.Hours()) % 24
+	mins := int(left.Minutes()) % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("ends in %dd %dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("ends in %dh %dm", hours, mins)
+	default:
+		return fmt.Sprintf("ends in %dm", mins)
+	}
 }
 
 func (t *Telegram) call(ctx context.Context, method string, form url.Values) error {
