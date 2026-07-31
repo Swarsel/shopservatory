@@ -43,8 +43,8 @@ const pageTemplate = `<!doctype html>
   .mthumb { width: 32px; height: 32px; object-fit: cover; vertical-align: middle; margin-right: .45rem; border-radius: 3px; }
   td .title { vertical-align: middle; }
   .status-active { color: #3a3; } .status-sold { color: #c44; } .status-removed { color: #888; }
-  .spark { display: flex; align-items: flex-end; gap: 2px; height: 40px; margin: .4rem 0; }
-  .spark > div { width: 6px; background: #58a6ff88; }
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 40px; margin: .4rem 0; overflow: hidden; }
+  .spark > div { flex: 1 1 0; min-width: 0; max-width: 6px; background: #58a6ff88; }
   .histrow { font-size: .75rem; color: #8889; }
 </style>
 </head>
@@ -209,6 +209,17 @@ const pageTemplate = `<!doctype html>
       if (isNaN(d)) return '';
       function p(n){ return (n < 10 ? '0' : '') + n; }
       return 'ends ' + p(d.getDate()) + '.' + p(d.getMonth()+1) + '.' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+
+    function sparkPoints(h, n) {
+      if (h.length <= n) return h;
+      var out = [];
+      for (var i = 0; i < n; i++) {
+        var start = Math.floor(i*h.length/n), end = Math.max(Math.floor((i+1)*h.length/n), start+1);
+        var p = h[end-1];
+        out.push({price: p.price, status: p.status, at: (end-start > 1 ? h[start].at+' … ' : '') + p.at});
+      }
+      return out;
     }
 
     function tickCountdowns() {
@@ -497,9 +508,10 @@ const pageTemplate = `<!doctype html>
           var dr = el('tr'); var dc = el('td','detail'); dc.colSpan = 8;
           var h = m.history || [];
           if (h.length) {
-            var max = 0; h.forEach(function(p){ if (p.price > max) max = p.price; });
+            var shown = sparkPoints(h, 120);
+            var max = 0; shown.forEach(function(p){ if (p.price > max) max = p.price; });
             var sp = el('div','spark');
-            h.forEach(function(p){ var bar = el('div'); bar.style.height = (max>0 ? Math.max(2, Math.round(p.price/max*40)) : 2)+'px'; bar.title = p.at+': '+p.price+(p.status&&p.status!=='active'?' ('+p.status+')':''); sp.appendChild(bar); });
+            shown.forEach(function(p){ var bar = el('div'); bar.style.height = (max>0 ? Math.max(2, Math.round(p.price/max*40)) : 2)+'px'; bar.title = p.at+': '+p.price+(p.status&&p.status!=='active'?' ('+p.status+')':''); sp.appendChild(bar); });
             dc.appendChild(sp);
             var first = h[0], last = h[h.length-1];
             dc.appendChild(el('div','histrow', h.length+' checks · first '+first.price+' ('+first.at+') · latest '+last.price+' ('+last.at+')'));
