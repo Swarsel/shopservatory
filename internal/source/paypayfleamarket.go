@@ -43,8 +43,26 @@ func (p *payPayFleaMarket) Snapshot(ctx context.Context, rawURL string) (ItemSna
 	if err != nil {
 		return ItemSnapshot{}, err
 	}
-	price, _ := strconv.ParseFloat(nonDigits.ReplaceAllString(doc.Find("p.price, .price").First().Text(), ""), 64)
-	return ItemSnapshot{Price: price, Currency: "JPY", Status: "active"}, nil
+	return payPaySnapshotFromDoc(doc, rawURL)
+}
+
+func payPaySnapshotFromDoc(doc *goquery.Document, rawURL string) (ItemSnapshot, error) {
+	name := doc.Find("h1.flmIdp__itemName").First()
+	if name.Length() == 0 {
+		if strings.HasPrefix(strings.TrimSpace(doc.Find("title").Text()), "Error") {
+			return ItemSnapshot{Status: "removed"}, nil
+		}
+		return ItemSnapshot{}, fmt.Errorf("paypayfleamarket: unrecognized item page: %s", rawURL)
+	}
+	priceEl := doc.Find(".flmIdp__itemPrice").First().Clone()
+	priceEl.Find("span").Remove()
+	price, _ := strconv.ParseFloat(nonDigits.ReplaceAllString(priceEl.Text(), ""), 64)
+	status := "sold"
+	if doc.Find("#shopping_form").Length() > 0 {
+		status = "active"
+	}
+	img := doc.Find(".flexslider li[data-thumb]").First().AttrOr("data-thumb", "")
+	return ItemSnapshot{Title: collapseSpaces(name.Text()), Price: price, Currency: "JPY", ImageURL: img, Status: status}, nil
 }
 
 func (p *payPayFleaMarket) searchBuyee(ctx context.Context, spec SearchSpec) ([]Listing, error) {

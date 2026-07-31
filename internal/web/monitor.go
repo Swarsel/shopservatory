@@ -226,6 +226,14 @@ func detectMonitorSource(reg *source.Registry, rawURL string) string {
 		return ""
 	}
 	host := strings.ToLower(u.Hostname())
+	if host == "buyee.jp" || strings.HasSuffix(host, ".buyee.jp") {
+		if strings.HasPrefix(u.Path, "/paypayfleamarket/") {
+			if _, ok := reg.Get("paypayfleamarket"); ok {
+				return "paypayfleamarket"
+			}
+		}
+		return ""
+	}
 	hostMatch := map[string]string{
 		"mercari":       "mercari",
 		"fril.jp":       "rakuma",
