@@ -153,13 +153,20 @@ const pageTemplate = `<!doctype html>
     </table>
   </div>
 
-  <h2><span id="feed-label">Recent finds</span> <span class="muted" id="feed-status" style="font-size:.8rem;font-weight:normal"></span></h2>
+  <h2><span id="feed-label">Finds</span> <span class="muted" id="feed-status" style="font-size:.8rem;font-weight:normal"></span></h2>
   <div class="feedbar">
     <input id="feed-filter" placeholder="filter results…" autocomplete="off">
-    <button type="button" id="feed-toggle">Show all</button>
+    <button type="button" id="feed-prev">‹ prev</button>
+    <span class="muted" id="feed-pageinfo"></span>
+    <button type="button" id="feed-next">next ›</button>
   </div>
   <p class="muted" id="feed-empty" style="display:none">Nothing found yet. Once searches run, new items appear here.</p>
   <div class="grid" id="feed"></div>
+  <div class="feedbar" id="feed-pager-bottom" style="justify-content:center;margin-top:.9rem">
+    <button type="button" id="feed-prev2">‹ prev</button>
+    <span class="muted" id="feed-pageinfo2"></span>
+    <button type="button" id="feed-next2">next ›</button>
+  </div>
 
   <p class="muted" style="margin-top:2rem">shopservatory · live feed</p>
 
@@ -548,39 +555,52 @@ const pageTemplate = `<!doctype html>
           else { if(btn){ btn.disabled=false; btn.textContent='monitor'; } alert('Could not add to monitoring'); }
         }).catch(function(){ if(btn){ btn.disabled=false; btn.textContent='monitor'; } });
     }
-    var rawListings = [];
     var feedFilter = '';
-    var showAll = false;
+    var feedPage = 1;
 
-    function paintFeed() {
-      var f = feedFilter.toLowerCase();
-      var shown = f ? rawListings.filter(function(it){
-        return (it.title||'').toLowerCase().indexOf(f) >= 0 || sourceName(it.source).toLowerCase().indexOf(f) >= 0;
-      }) : rawListings;
+    function renderFeed(list, total, page, pages) {
+      feedPage = page;
       var feed = document.getElementById('feed');
-      feed.replaceChildren.apply(feed, shown.map(card));
-      document.getElementById('feed-empty').style.display = rawListings.length ? 'none' : '';
+      feed.replaceChildren.apply(feed, list.map(card));
+      document.getElementById('feed-empty').style.display = total ? 'none' : '';
       document.getElementById('feed-status').textContent =
-        '· ' + (f ? shown.length + ' of ' + rawListings.length : rawListings.length) +
-        ' · updated ' + new Date().toLocaleTimeString();
+        '· ' + total + (feedFilter ? ' matching' : '') + ' · updated ' + new Date().toLocaleTimeString();
+      var info = 'page ' + page + ' / ' + pages;
+      ['','2'].forEach(function(sfx){
+        document.getElementById('feed-pageinfo'+sfx).textContent = info;
+        document.getElementById('feed-prev'+sfx).disabled = page <= 1;
+        document.getElementById('feed-next'+sfx).disabled = page >= pages;
+      });
+      document.getElementById('feed-pager-bottom').style.display = pages > 1 ? '' : 'none';
     }
 
-    function renderFeed(list) { rawListings = list; paintFeed(); }
-
     function refresh() {
-      return fetch('/api/state' + (showAll ? '?all=1' : ''), {headers:{'Accept':'application/json'}})
+      var params = new URLSearchParams();
+      params.set('page', feedPage);
+      if (feedFilter) params.set('q', feedFilter);
+      return fetch('/api/state?' + params.toString(), {headers:{'Accept':'application/json'}})
         .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
-        .then(function(s){ renderSearches(s.searches||[]); renderMonitors(s.monitors||[]); renderFeed(s.listings||[]); renderSettings(s.settings||{}); renderMe(s.me||{}); renderUsers(s.users||[]); })
+        .then(function(s){
+          renderSearches(s.searches||[]); renderMonitors(s.monitors||[]);
+          renderFeed(s.listings||[], s.listingsTotal||0, s.listingsPage||1, s.listingsPages||1);
+          renderSettings(s.settings||{}); renderMe(s.me||{}); renderUsers(s.users||[]);
+        })
         .catch(function(){});
     }
 
-    document.getElementById('feed-filter').addEventListener('input', function(e){ feedFilter = e.target.value.trim(); paintFeed(); });
-    document.getElementById('feed-toggle').onclick = function(){
-      showAll = !showAll;
-      this.textContent = showAll ? 'Show recent' : 'Show all';
-      document.getElementById('feed-label').textContent = showAll ? 'All finds' : 'Recent finds';
-      refresh();
-    };
+    var filterTimer;
+    document.getElementById('feed-filter').addEventListener('input', function(e){
+      feedFilter = e.target.value.trim(); feedPage = 1;
+      clearTimeout(filterTimer); filterTimer = setTimeout(refresh, 300);
+    });
+    function turnPage(delta) {
+      feedPage = Math.max(1, feedPage + delta);
+      refresh().then(function(){ window.scrollTo({top: document.getElementById('feed-label').offsetTop - 20, behavior: 'instant'}); });
+    }
+    ['','2'].forEach(function(sfx){
+      document.getElementById('feed-prev'+sfx).onclick = function(){ turnPage(-1); };
+      document.getElementById('feed-next'+sfx).onclick = function(){ turnPage(1); };
+    });
 
     refresh();
     setInterval(refresh, INTERVAL);

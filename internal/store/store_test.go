@@ -69,10 +69,19 @@ func TestPerUserScoping(t *testing.T) {
 	if _, _, err := st.RecordListing(ctx, aSearch, "mercari", source.Listing{ExternalID: "x1", Title: "Item"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.RecentListings(ctx, alice.ID, 100); len(got) != 1 {
-		t.Fatalf("alice feed should have 1, got %d", len(got))
+	if got, total, _ := st.ListingsPage(ctx, alice.ID, "", nil, 100, 0); len(got) != 1 || total != 1 {
+		t.Fatalf("alice feed should have 1, got %d (total %d)", len(got), total)
 	}
-	if got, _ := st.RecentListings(ctx, bob.ID, 100); len(got) != 0 {
-		t.Fatalf("bob feed must not see alice's listing, got %d", len(got))
+	if got, total, _ := st.ListingsPage(ctx, bob.ID, "", nil, 100, 0); len(got) != 0 || total != 0 {
+		t.Fatalf("bob feed must not see alice's listing, got %d (total %d)", len(got), total)
+	}
+	if _, total, _ := st.ListingsPage(ctx, alice.ID, "item", nil, 100, 0); total != 1 {
+		t.Fatalf("title filter should match 1, got %d", total)
+	}
+	if _, total, _ := st.ListingsPage(ctx, alice.ID, "nomatch", nil, 100, 0); total != 0 {
+		t.Fatalf("filter should match 0, got %d", total)
+	}
+	if _, total, _ := st.ListingsPage(ctx, alice.ID, "nomatch", []string{"mercari"}, 100, 0); total != 1 {
+		t.Fatalf("source filter should match 1, got %d", total)
 	}
 }

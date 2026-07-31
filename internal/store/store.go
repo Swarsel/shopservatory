@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Swarsel/shopservatory/internal/source"
@@ -395,25 +396,50 @@ func (s *Store) UpdateListingMarket(ctx context.Context, id int64, price float64
 	return err
 }
 
-func (s *Store) RecentListings(ctx context.Context, userID int64, limit int) ([]Listing, error) {
+func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, sources []string, limit, offset int) ([]Listing, int, error) {
+	where := `se.user_id = ?
+	   AND l.id IN (
+	     SELECT MIN(l2.id) FROM listings l2
+	     JOIN searches se2 ON se2.id = l2.search_id
+	     WHERE se2.user_id = ?
+	     GROUP BY l2.source, l2.external_id
+	   )`
+	args := []any{userID, userID}
+	if filter != "" {
+		clause := `(l.title LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(filter)+"%")
+		for _, src := range sources {
+			clause += ` OR l.source = ?`
+			args = append(args, src)
+		}
+		clause += `)`
+		where += ` AND ` + clause
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM listings l JOIN searches se ON se.id = l.search_id WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT l.id, l.search_id, l.source, l.external_id, l.title, l.price, l.currency, l.url, l.image_url, l.sale_type, l.extra, l.first_seen, l.listed_at, l.notified
 		 FROM listings l
 		 JOIN searches se ON se.id = l.search_id
-		 WHERE se.user_id = ?
-		   AND l.id IN (
-		     SELECT MIN(l2.id) FROM listings l2
-		     JOIN searches se2 ON se2.id = l2.search_id
-		     WHERE se2.user_id = ?
-		     GROUP BY l2.source, l2.external_id
-		   )
+		 WHERE `+where+`
 		 ORDER BY l.first_seen DESC, l.id ASC
-		 LIMIT ?`, userID, userID, limit)
+		 LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	return scanListings(rows)
+	listings, err := scanListings(rows)
+	return listings, total, err
+}
+
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 func (s *Store) ListTargets(ctx context.Context, userID int64) ([]NotificationTarget, error) {

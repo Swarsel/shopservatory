@@ -176,12 +176,15 @@ type listingView struct {
 }
 
 type stateData struct {
-	Searches []searchView    `json:"searches"`
-	Listings []listingView   `json:"listings"`
-	Monitors []monitorView   `json:"monitors"`
-	Settings settingsView    `json:"settings"`
-	Me       meView          `json:"me"`
-	Users    []adminUserView `json:"users"`
+	Searches      []searchView    `json:"searches"`
+	Listings      []listingView   `json:"listings"`
+	ListingsTotal int             `json:"listingsTotal"`
+	ListingsPage  int             `json:"listingsPage"`
+	ListingsPages int             `json:"listingsPages"`
+	Monitors      []monitorView   `json:"monitors"`
+	Settings      settingsView    `json:"settings"`
+	Me            meView          `json:"me"`
+	Users         []adminUserView `json:"users"`
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -206,14 +209,36 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "list searches", err)
 		return
 	}
-	limit := 100
-	if r.URL.Query().Get("all") == "1" {
-		limit = 1000000
+	const pageSize = 100
+	filter := strings.TrimSpace(r.URL.Query().Get("q"))
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
 	}
-	listings, err := s.recentListingViews(r.Context(), userID, limit, target)
+	var filterSources []string
+	if filter != "" {
+		needle := strings.ToLower(filter)
+		for _, src := range s.registry.All() {
+			if strings.Contains(strings.ToLower(src.DisplayName()), needle) {
+				filterSources = append(filterSources, src.ID())
+			}
+		}
+	}
+	listings, total, err := s.store.ListingsPage(r.Context(), userID, filter, filterSources, pageSize, (page-1)*pageSize)
 	if err != nil {
-		s.fail(w, "recent listings", err)
+		s.fail(w, "list listings", err)
 		return
+	}
+	pages := (total + pageSize - 1) / pageSize
+	if pages < 1 {
+		pages = 1
+	}
+	if page > pages {
+		page = pages
+		if listings, total, err = s.store.ListingsPage(r.Context(), userID, filter, filterSources, pageSize, (page-1)*pageSize); err != nil {
+			s.fail(w, "list listings", err)
+			return
+		}
 	}
 	monitors, err := s.monitorViews(r.Context(), userID, target)
 	if err != nil {
@@ -238,12 +263,15 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	out := stateData{Searches: searches, Listings: listings, Monitors: monitors, Me: me, Users: users, Settings: settingsView{
-		Currency:        settings.Currency,
-		SearchInterval:  durStr(settings.SearchInterval),
-		MonitorInterval: durStr(settings.MonitorInterval),
-		TelegramChatID:  settings.TelegramChatID,
-	}}
+	out := stateData{
+		Searches: searches, Listings: s.listingViews(listings, target),
+		ListingsTotal: total, ListingsPage: page, ListingsPages: pages,
+		Monitors: monitors, Me: me, Users: users, Settings: settingsView{
+			Currency:        settings.Currency,
+			SearchInterval:  durStr(settings.SearchInterval),
+			MonitorInterval: durStr(settings.MonitorInterval),
+			TelegramChatID:  settings.TelegramChatID,
+		}}
 	if err := json.NewEncoder(w).Encode(out); err != nil {
 		s.log.Error("web: encode state", "err", err)
 	}
@@ -394,11 +422,7 @@ func (s *Server) searchViews(ctx context.Context, userID int64) ([]searchView, e
 	return out, nil
 }
 
-func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int, target string) ([]listingView, error) {
-	listings, err := s.store.RecentListings(ctx, userID, limit)
-	if err != nil {
-		return nil, err
-	}
+func (s *Server) listingViews(listings []store.Listing, target string) []listingView {
 	out := make([]listingView, 0, len(listings))
 	for _, l := range listings {
 
@@ -417,7 +441,7 @@ func (s *Server) recentListingViews(ctx context.Context, userID int64, limit int
 			Seen:        when.Format("2006-01-02 15:04"),
 		})
 	}
-	return out, nil
+	return out
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
