@@ -489,10 +489,10 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 	}
 	for src, cats := range s.excludedFeedCategories(ctx, userID) {
 		for _, cat := range cats {
-			where += ` AND NOT (l.source = ? AND (
-				json_extract(l.extra, '$.category') = ?
+			where += ` AND COALESCE(NOT (l.source = ? AND (
+				COALESCE(json_extract(l.extra, '$.category'), '') = ?
 				OR ',' || COALESCE(json_extract(l.extra, '$.categories'), '') || ',' LIKE ?
-			))`
+			)), 1)`
 			args = append(args, src, cat, "%,"+escapeLike(cat)+",%")
 		}
 	}

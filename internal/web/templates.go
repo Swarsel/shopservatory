@@ -856,7 +856,13 @@ const pageTemplate = `<!doctype html>
       var a = el('a'); a.href=item.url; a.target='_blank'; a.rel='noopener';
       if (item.imageUrl) {
         var img = el('img'); img.src='/img?u='+encodeURIComponent(item.imageUrl); img.loading='lazy'; img.alt='';
-        img.onerror = function(){ if (img.parentNode) img.parentNode.replaceChild(el('div','noimg','no image'), img); };
+        img.dataset.tries = '0';
+        img.onerror = function(){
+          var n = parseInt(img.dataset.tries || '0', 10) + 1;
+          img.dataset.tries = String(n);
+          if (n < 3) { setTimeout(function(){ img.src = '/img?u='+encodeURIComponent(item.imageUrl)+'&r='+n; }, 400 * n); return; }
+          if (img.parentNode) img.parentNode.replaceChild(el('div','noimg','no image'), img);
+        };
         a.appendChild(img);
       } else {
         a.appendChild(el('div','noimg','no image'));

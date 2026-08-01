@@ -328,3 +328,13 @@ var categoryFilterSources = map[string]bool{
 func SupportsCategoryFilter(sourceID string) bool {
 	return categoryFilterSources[strings.ToLower(sourceID)]
 }
+
+func nonEmpty(vals []string) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}

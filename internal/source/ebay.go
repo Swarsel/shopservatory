@@ -51,9 +51,7 @@ func (e *ebay) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	q := url.Values{}
 	q.Set("q", spec.Query)
 	q.Set("limit", "50")
-	if len(spec.ExcludedCategoryIDs()) > 0 {
-		q.Set("fieldgroups", "EXTENDED")
-	}
+	q.Set("fieldgroups", "EXTENDED")
 	if v := spec.Param("category_ids"); v != "" {
 		q.Set("category_ids", v)
 	}
@@ -96,9 +94,7 @@ func (e *ebay) SearchByImage(ctx context.Context, image []byte, spec SearchSpec)
 
 	q := url.Values{}
 	q.Set("limit", "50")
-	if len(spec.ExcludedCategoryIDs()) > 0 {
-		q.Set("fieldgroups", "EXTENDED")
-	}
+	q.Set("fieldgroups", "EXTENDED")
 	if v := spec.Param("category_ids"); v != "" {
 		q.Set("category_ids", v)
 	}
@@ -217,10 +213,14 @@ func ebayListings(body []byte, spec SearchSpec) ([]Listing, error) {
 			"condition": it.Condition,
 			"seller":    it.Seller.Username,
 		}
-		if len(it.Categories) > 0 {
-			extra["category"] = it.Categories[0].CategoryID
-		} else if len(it.LeafCategoryIDs) > 0 {
+		chain := ebayCategoryIDs(it.Categories)
+		if len(it.LeafCategoryIDs) > 0 {
 			extra["category"] = it.LeafCategoryIDs[0]
+		} else if len(chain) > 0 {
+			extra["category"] = chain[0]
+		}
+		if len(chain) > 0 {
+			extra["categories"] = strings.Join(chain, ",")
 		}
 		if saleType == "auction" {
 			extra["bids"] = strconv.Itoa(it.BidCount)

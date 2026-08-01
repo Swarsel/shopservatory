@@ -90,8 +90,9 @@ func whListings(adverts []whAdvert, spec SearchSpec) []Listing {
 			URL:        absoluteURL("https://www.willhaben.at/iad", a.attr("SEO_URL")),
 			ImageURL:   image,
 			Extra: map[string]string{
-				"location": a.attr("LOCATION"),
-				"category": whLeafCategory(cats),
+				"location":   a.attr("LOCATION"),
+				"category":   whLeafCategory(cats),
+				"categories": strings.Join(cats, ","),
 			},
 		})
 	}

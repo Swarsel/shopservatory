@@ -62,6 +62,7 @@ func (b *bazar) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) 
 				"location":   it.Common.Location.DisplayText,
 				"price_type": it.Common.Price.PriceType.Name,
 				"category":   firstNonEmpty(it.Specific.Section.ID, it.Common.SubCategory.ID, it.Common.Category.ID),
+				"categories": strings.Join(nonEmpty(cats), ","),
 			},
 		})
 	}

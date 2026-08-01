@@ -536,31 +536,22 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad image url", http.StatusBadRequest)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
-	if err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	req.Header.Set("User-Agent", imageProxyUA)
-	req.Header.Set("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
-
-	client := s.images
-	if u, err := url.Parse(target); err == nil {
-		req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
-		if proxiedImageHost(u.Hostname()) {
-			client = s.imagesProxy
+	resp, err := s.fetchImage(r, target)
+	if err == nil && resp != nil && !imageResponseOK(resp) {
+		resp.Body.Close()
+		resp = nil
+		if alt := imageURLWithoutTransform(target); alt != "" {
+			resp, err = s.fetchImage(r, alt)
 		}
 	}
-
-	resp, err := client.Do(req)
-	if err != nil {
+	if err != nil || resp == nil {
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	ct := resp.Header.Get("Content-Type")
-	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(ct, "image/") {
+	if !imageResponseOK(resp) {
 		http.Error(w, "not an image", http.StatusNotFound)
 		return
 	}
@@ -570,6 +561,55 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", cl)
 	}
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, 10<<20))
+}
+
+func imageResponseOK(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusOK &&
+		strings.HasPrefix(resp.Header.Get("Content-Type"), "image/")
+}
+
+func imageURLWithoutTransform(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.RawQuery == "" {
+		return ""
+	}
+	u.RawQuery = ""
+	return u.String()
+}
+
+func (s *Server) fetchImage(r *http.Request, target string) (*http.Response, error) {
+	const attempts = 2
+	var resp *http.Response
+	var err error
+	for i := 0; i < attempts; i++ {
+		req, reqErr := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+		if reqErr != nil {
+			return nil, reqErr
+		}
+		req.Header.Set("User-Agent", imageProxyUA)
+		req.Header.Set("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
+
+		client := s.images
+		if u, uErr := url.Parse(target); uErr == nil {
+			req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
+			if proxiedImageHost(u.Hostname()) {
+				client = s.imagesProxy
+			}
+		}
+
+		resp, err = client.Do(req)
+		if err == nil && imageResponseOK(resp) {
+			return resp, nil
+		}
+		if resp != nil && i < attempts-1 {
+			resp.Body.Close()
+			resp = nil
+		}
+		if r.Context().Err() != nil {
+			break
+		}
+	}
+	return resp, err
 }
 
 func safeImageURL(raw string) (string, bool) {

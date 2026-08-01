@@ -424,3 +424,120 @@ func TestFeedHidesExcludedCategories(t *testing.T) {
 		t.Fatalf("expected 2 remaining, got %d: %v", total, titles)
 	}
 }
+
+func TestFeedCategoryExclusionKeepsUncategorizedListings(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-nc", "nc@example.com", "Nc")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "x", Interval: time.Minute, Enabled: true,
+	})
+
+	add := func(id, title string, extra map[string]string) {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari",
+			source.Listing{ExternalID: id, Title: title, Extra: extra}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("a", "fashion scarf", map[string]string{"category": "23", "categories": "23,1,3088"})
+	add("b", "trading card", map[string]string{"category": "741", "categories": "741,82,1328"})
+	add("c", "leaf equals excluded", map[string]string{"category": "3088"})
+	add("d", "legacy no category at all", nil)
+	add("e", "other extra keys only", map[string]string{"location": "Tokyo"})
+
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 100, 0); total != 5 {
+		t.Fatalf("baseline expected 5, got %d", total)
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "mercari", ExcludeCategories: "3088",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, total, err := st.ListingsPage(ctx, u.ID, "", nil, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string]bool{}
+	for _, l := range got {
+		kept[l.Title] = true
+	}
+	if kept["fashion scarf"] {
+		t.Error("an item whose ancestor chain contains 3088 must be hidden")
+	}
+	if kept["leaf equals excluded"] {
+		t.Error("an item whose leaf category is 3088 must be hidden")
+	}
+	// The regression: NULL json_extract made the whole clause NULL, so rows
+	// with no category were silently filtered out along with the fashion ones.
+	if !kept["legacy no category at all"] {
+		t.Error("a listing with no category must never be hidden by a category rule")
+	}
+	if !kept["other extra keys only"] {
+		t.Error("a listing whose extra lacks a category key must never be hidden")
+	}
+	if !kept["trading card"] {
+		t.Error("an unrelated category must be kept")
+	}
+	if total != 3 {
+		t.Fatalf("expected 3 kept, got %d: %v", total, kept)
+	}
+}
+
+func TestFeedCategoryExclusionMatchesParentViaChainPerSource(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-pc", "pc@example.com", "Pc")
+	esid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "ebay", Query: "x", Interval: time.Minute, Enabled: true,
+	})
+	msid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "x", Interval: time.Minute, Enabled: true,
+	})
+
+	add := func(sid int64, src, id, title string, extra map[string]string) {
+		if _, _, err := st.RecordListing(ctx, sid, src,
+			source.Listing{ExternalID: id, Title: title, Extra: extra}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(esid, "ebay", "e1", "nike shirt", map[string]string{
+		"category": "15687", "categories": "15687,1059,11450,185100,260012",
+	})
+	add(esid, "ebay", "e2", "pokemon card", map[string]string{
+		"category": "183454", "categories": "183454,2536,220",
+	})
+	add(esid, "ebay", "e3", "legacy ebay", nil)
+	add(msid, "mercari", "m1", "mercari item in 11450-ish", map[string]string{
+		"category": "11450", "categories": "11450",
+	})
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "ebay", ExcludeCategories: "11450",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, total, err := st.ListingsPage(ctx, u.ID, "", nil, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string]bool{}
+	for _, l := range got {
+		kept[l.Title] = true
+	}
+	if kept["nike shirt"] {
+		t.Error("an ebay parent id in the chain must hide the listing")
+	}
+	if !kept["pokemon card"] {
+		t.Error("an unrelated ebay category must be kept")
+	}
+	if !kept["legacy ebay"] {
+		t.Error("an ebay listing with no category must never be hidden")
+	}
+	if !kept["mercari item in 11450-ish"] {
+		t.Error("an ebay rule must not hide mercari listings sharing the id")
+	}
+	if total != 3 {
+		t.Fatalf("expected 3 kept, got %d: %v", total, kept)
+	}
+}
