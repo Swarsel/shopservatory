@@ -81,7 +81,7 @@ const pageTemplate = `<!doctype html>
         <div>
           <label>Exclude categories <span class="muted">(where supported)</span></label>
           <input name="exclude_categories" id="f-excat" placeholder="optional — category ids"
-                 title="Comma-separated category ids; a find's id is shown on its card. Supported: mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty, rakuma. Excluding a parent id also drops its children on mercari, ebay and willhaben; the others match exact ids only.">
+                 title="Comma-separated category ids; a find's id is shown on its card. Supported: mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty, rakuma. Excluding a parent id also drops its children on mercari, ebay, willhaben and rakuma; craigslist, jmty and kleinanzeigen match exact ids only.">
         </div>
       </div>
       <div class="row">
@@ -174,8 +174,9 @@ const pageTemplate = `<!doctype html>
     <h3>Per-source exclusions</h3>
     <p class="muted">Applied to every search on that source, on top of the search's own exclusions.
       Category ids work on mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty and rakuma —
-      each find's id is shown on its card. On mercari, ebay and willhaben a parent id also excludes its
-      children; the others match exact ids only.</p>
+      each find's id is shown on its card. On mercari, ebay, willhaben and rakuma a parent id also
+      excludes its children (rakuma: 10005 = メンズ); craigslist, jmty and kleinanzeigen match exact
+      ids only.</p>
     <table>
       <thead><tr><th>Source</th><th>Exclude keywords</th><th>Exclude category ids</th><th></th></tr></thead>
       <tbody id="srcex"></tbody>

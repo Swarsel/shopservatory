@@ -13,7 +13,8 @@ import (
 )
 
 type rakuma struct {
-	client *Client
+	client     *Client
+	categories rakumaCategoryTree
 }
 
 func newRakuma(client *Client) *rakuma { return &rakuma{client: client} }
@@ -50,7 +51,7 @@ func (r *rakuma) Search(ctx context.Context, spec SearchSpec) ([]Listing, error)
 		img := sel.Find(".item-box__image-wrapper img").First()
 		image := firstNonEmpty(img.AttrOr("data-original", ""), img.AttrOr("src", ""))
 		category := rakumaCardCategory(sel)
-		if category != "" && specExcludesCategory(spec, category) {
+		if category != "" && r.categoryExcluded(ctx, spec, category) {
 			return
 		}
 		extra := map[string]string{
@@ -58,6 +59,9 @@ func (r *rakuma) Search(ctx context.Context, spec SearchSpec) ([]Listing, error)
 		}
 		if category != "" {
 			extra["category"] = category
+			if chain := r.categories.ancestors(ctx, r, category); len(chain) > 1 {
+				extra["categories"] = strings.Join(chain, ",")
+			}
 		}
 		listings = append(listings, Listing{
 			ExternalID: lastPathSegment(href),
