@@ -118,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /searches/enable", b(http.HandlerFunc(s.handleBulkEnable)))
 	mux.Handle("POST /searches/run", b(http.HandlerFunc(s.handleBulkRun)))
 	mux.Handle("POST /searches/repopulate", b(http.HandlerFunc(s.handleBulkRepopulate)))
+	mux.Handle("POST /searches/patch", b(http.HandlerFunc(s.handleBulkPatch)))
 	mux.Handle("POST /searches/{id}/repopulate", b(http.HandlerFunc(s.handleRepopulate)))
 	mux.Handle("POST /searches/{id}/toggle", b(http.HandlerFunc(s.handleToggle)))
 	mux.Handle("POST /searches/{id}/run", b(http.HandlerFunc(s.handleRun)))
@@ -131,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /monitors/{id}/archive", b(http.HandlerFunc(s.handleArchiveMonitor)))
 	mux.Handle("POST /settings", b(http.HandlerFunc(s.handleSettings)))
 	mux.Handle("POST /settings/source", b(http.HandlerFunc(s.handleSourceExclusions)))
+	mux.Handle("POST /settings/source/pause", b(http.HandlerFunc(s.handleSourcePause)))
 	mux.Handle("POST /password", b(http.HandlerFunc(s.handlePassword)))
 	mux.Handle("POST /admin/users", b(s.requireAdmin(http.HandlerFunc(s.handleAdminCreateUser))))
 	mux.Handle("POST /admin/users/{id}/update", b(s.requireAdmin(http.HandlerFunc(s.handleAdminUpdateUser))))
@@ -456,6 +458,7 @@ type settingsView struct {
 type exclusionView struct {
 	Exclude           string `json:"exclude"`
 	ExcludeCategories string `json:"excludeCategories"`
+	Paused            bool   `json:"paused"`
 }
 
 func (s *Server) sourceExclusionViews(ctx context.Context, userID int64) map[string]exclusionView {
@@ -466,7 +469,7 @@ func (s *Server) sourceExclusionViews(ctx context.Context, userID int64) map[str
 		return out
 	}
 	for id, e := range byID {
-		out[id] = exclusionView{Exclude: e.Exclude, ExcludeCategories: e.ExcludeCategories}
+		out[id] = exclusionView{Exclude: e.Exclude, ExcludeCategories: e.ExcludeCategories, Paused: e.Paused}
 	}
 	return out
 }
@@ -490,6 +493,25 @@ func (s *Server) handleSourceExclusions(w http.ResponseWriter, r *http.Request) 
 		s.fail(w, "save source exclusions", err)
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSourcePause(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, errBadForm.Error(), http.StatusBadRequest)
+		return
+	}
+	srcID := r.FormValue("source")
+	if _, ok := s.registry.Get(srcID); !ok {
+		http.Error(w, "unknown source", http.StatusBadRequest)
+		return
+	}
+	paused := r.FormValue("paused") == "1"
+	if err := s.store.SetSourcePaused(r.Context(), auth.UserID(r.Context()), srcID, paused); err != nil {
+		s.fail(w, "pause source", err)
+		return
+	}
+	s.log.Info("web: source pause toggled", "source", srcID, "paused", paused)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -847,6 +869,73 @@ func (s *Server) handleBulkRun(w http.ResponseWriter, r *http.Request) {
 	for _, id := range owned {
 		s.sched.RunNow(id)
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleBulkPatch(w http.ResponseWriter, r *http.Request) {
+	ids, err := bulkSearchIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(ids) == 0 {
+		http.Error(w, "no search ids provided", http.StatusBadRequest)
+		return
+	}
+
+	var p store.SearchPatch
+	if v := strings.TrimSpace(r.FormValue("interval")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			http.Error(w, "invalid interval (e.g. 30m, 1h, 6h)", http.StatusBadRequest)
+			return
+		}
+		p.Interval = &d
+	}
+	if v := strings.TrimSpace(r.FormValue("min_price")); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			http.Error(w, "invalid min price", http.StatusBadRequest)
+			return
+		}
+		p.MinPrice = &f
+	}
+	if v := strings.TrimSpace(r.FormValue("max_price")); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			http.Error(w, "invalid max price", http.StatusBadRequest)
+			return
+		}
+		p.MaxPrice = &f
+	}
+	if r.Form.Has("exclude") {
+		v := strings.TrimSpace(r.FormValue("exclude"))
+		p.Exclude = &v
+	}
+	if r.Form.Has("exclude_categories") {
+		v := strings.TrimSpace(r.FormValue("exclude_categories"))
+		p.ExcludeCategories = &v
+	}
+	if r.Form.Has("params") {
+		p.Params = parseParams(r.FormValue("params"))
+		p.ReplaceParams = r.FormValue("params_mode") == "replace"
+		if len(p.Params) == 0 && !p.ReplaceParams {
+			http.Error(w, "no parameters given — use replace mode to clear them all", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if p.Empty() {
+		http.Error(w, "nothing to change — fill in at least one field", http.StatusBadRequest)
+		return
+	}
+
+	n, err := s.store.PatchSearches(r.Context(), auth.UserID(r.Context()), ids, p)
+	if err != nil {
+		s.fail(w, "bulk edit searches", err)
+		return
+	}
+	s.log.Info("web: bulk edited searches", "count", n)
 	w.WriteHeader(http.StatusNoContent)
 }
 

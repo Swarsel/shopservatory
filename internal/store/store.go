@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS source_exclusions (
     source             TEXT NOT NULL,
     exclude            TEXT NOT NULL DEFAULT '',
     exclude_categories TEXT NOT NULL DEFAULT '',
+    paused             INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, source)
 );
 
@@ -175,7 +176,10 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 	if err := s.addColumnIfMissing(ctx, "searches", "exclude_categories", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing(ctx, "source_exclusions", "paused", "INTEGER NOT NULL DEFAULT 0")
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table, column, typ string) error {
@@ -302,7 +306,11 @@ func (s *Store) ListSearches(ctx context.Context, enabledOnly bool) ([]Search, e
 	             interval_seconds, enabled, created_at, last_run_at, image, exclude, exclude_categories
 	      FROM searches`
 	if enabledOnly {
-		q += ` WHERE enabled = 1`
+		q += ` WHERE enabled = 1
+		       AND NOT EXISTS (SELECT 1 FROM source_exclusions x
+		                       WHERE x.user_id = searches.user_id
+		                         AND x.source = searches.source
+		                         AND x.paused = 1)`
 	}
 	q += ` ORDER BY id`
 	rows, err := s.db.QueryContext(ctx, q)
@@ -373,6 +381,85 @@ func (s *Store) SetSearchEnabled(ctx context.Context, id int64, enabled bool) er
 func (s *Store) DeleteSearch(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM searches WHERE id = ?`, id)
 	return err
+}
+
+type SearchPatch struct {
+	Interval          *time.Duration
+	MinPrice          *float64
+	MaxPrice          *float64
+	Exclude           *string
+	ExcludeCategories *string
+	Params            map[string]string
+	ReplaceParams     bool
+}
+
+func (p SearchPatch) Empty() bool {
+	return p.Interval == nil && p.MinPrice == nil && p.MaxPrice == nil &&
+		p.Exclude == nil && p.ExcludeCategories == nil && len(p.Params) == 0 && !p.ReplaceParams
+}
+
+func (s *Store) PatchSearches(ctx context.Context, userID int64, ids []int64, p SearchPatch) (int64, error) {
+	if len(ids) == 0 || p.Empty() {
+		return 0, nil
+	}
+	owned, err := s.OwnedSearchIDs(ctx, userID, ids)
+	if err != nil {
+		return 0, err
+	}
+
+	var n int64
+	for _, id := range owned {
+		se, err := s.GetSearch(ctx, id)
+		if err != nil {
+			continue
+		}
+		if p.Interval != nil {
+			se.Interval = *p.Interval
+		}
+		if p.MinPrice != nil {
+			v := *p.MinPrice
+			if v < 0 {
+				se.MinPrice = nil
+			} else {
+				se.MinPrice = &v
+			}
+		}
+		if p.MaxPrice != nil {
+			v := *p.MaxPrice
+			if v < 0 {
+				se.MaxPrice = nil
+			} else {
+				se.MaxPrice = &v
+			}
+		}
+		if p.Exclude != nil {
+			se.Exclude = *p.Exclude
+		}
+		if p.ExcludeCategories != nil {
+			se.ExcludeCategories = *p.ExcludeCategories
+		}
+		if p.ReplaceParams {
+			se.Params = p.Params
+		} else if len(p.Params) > 0 {
+			merged := map[string]string{}
+			for k, v := range se.Params {
+				merged[k] = v
+			}
+			for k, v := range p.Params {
+				if v == "" {
+					delete(merged, k)
+				} else {
+					merged[k] = v
+				}
+			}
+			se.Params = merged
+		}
+		if err := s.UpdateSearch(ctx, se); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (s *Store) RepopulateSearch(ctx context.Context, id int64) (int64, error) {

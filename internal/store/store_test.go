@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -591,5 +592,370 @@ func TestRepopulateSearch(t *testing.T) {
 	}
 	if seB, _ := st.GetSearch(ctx, b); seB.LastRunAt != nil {
 		t.Error("repopulating one search must not touch another")
+	}
+}
+
+func TestRepopulateLeavesMonitorsIntact(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-rm", "rm@example.com", "Rm")
+
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "rakuma", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	if _, _, err := st.RecordListing(ctx, sid, "rakuma",
+		source.Listing{ExternalID: "x1", Title: "a find"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	mid, err := st.AddMonitor(ctx, MonitoredItem{
+		UserID: u.ID, Source: "rakuma", ExternalID: "x1", URL: "https://item.fril.jp/x1",
+		Title: "watched item", LastPrice: 4200, Status: "active",
+		Interval: time.Hour, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordMonitorCheck(ctx, mid, source.ItemSnapshot{
+		Price: 4000, Status: "active", Currency: "JPY",
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	before, _ := st.PriceHistory(ctx, mid)
+	if len(before) < 2 {
+		t.Fatalf("precondition: expected price history, got %d", len(before))
+	}
+
+	if _, err := st.RepopulateSearch(ctx, sid); err != nil {
+		t.Fatal(err)
+	}
+
+	mons, _ := st.ListMonitors(ctx, u.ID)
+	if len(mons) != 1 {
+		t.Fatalf("repopulating a search must not delete monitors, got %d", len(mons))
+	}
+	m := mons[0]
+	if m.Title != "watched item" || m.LastPrice != 4000 || !m.Enabled {
+		t.Fatalf("monitor was altered: %+v", m)
+	}
+	after, _ := st.PriceHistory(ctx, mid)
+	if len(after) != len(before) {
+		t.Fatalf("price history must survive: had %d, now %d", len(before), len(after))
+	}
+}
+
+func TestPatchSearchesOnlyChangesGivenFields(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-pt", "pt@example.com", "Pt")
+	other, _ := st.UserFromIdentity(ctx, "sub-pt2", "pt2@example.com", "Pt2")
+
+	min := 10.0
+	a, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "keep me", Interval: time.Minute,
+		Enabled: true, MinPrice: &min, Exclude: "old", ExcludeCategories: "3088",
+		Params: map[string]string{"sort": "newest", "status": "all"},
+	})
+	b, _ := st.CreateSearch(ctx, Search{
+		UserID: other.ID, Source: "mercari", Query: "not mine", Interval: time.Minute, Enabled: true,
+	})
+
+	d := 2 * time.Hour
+	n, err := st.PatchSearches(ctx, u.ID, []int64{a, b}, SearchPatch{Interval: &d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("must only patch the caller's searches, got %d", n)
+	}
+
+	se, _ := st.GetSearch(ctx, a)
+	if se.Interval != d {
+		t.Errorf("interval not applied: %v", se.Interval)
+	}
+	if se.Query != "keep me" {
+		t.Errorf("query must be untouched, got %q", se.Query)
+	}
+	if se.MinPrice == nil || *se.MinPrice != 10 {
+		t.Error("min price must be untouched")
+	}
+	if se.Exclude != "old" || se.ExcludeCategories != "3088" {
+		t.Error("exclusions must be untouched when not in the patch")
+	}
+	if se.Params["sort"] != "newest" || se.Params["status"] != "all" {
+		t.Errorf("params must be untouched, got %v", se.Params)
+	}
+
+	if seB, _ := st.GetSearch(ctx, b); seB.Interval != time.Minute {
+		t.Error("another user's search must never be patched")
+	}
+}
+
+func TestPatchSearchesParamsMergeAndReplace(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-pp", "pp@example.com", "Pp")
+	id, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+		Params: map[string]string{"sort": "newest", "status": "all"},
+	})
+
+	if _, err := st.PatchSearches(ctx, u.ID, []int64{id}, SearchPatch{
+		Params: map[string]string{"sort": "price_asc", "domain": "x"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	se, _ := st.GetSearch(ctx, id)
+	if se.Params["sort"] != "price_asc" || se.Params["status"] != "all" || se.Params["domain"] != "x" {
+		t.Fatalf("merge should overwrite and add, keeping others: %v", se.Params)
+	}
+
+	if _, err := st.PatchSearches(ctx, u.ID, []int64{id}, SearchPatch{
+		Params: map[string]string{"status": ""},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	se, _ = st.GetSearch(ctx, id)
+	if _, still := se.Params["status"]; still {
+		t.Fatalf("an empty value should remove a param: %v", se.Params)
+	}
+
+	if _, err := st.PatchSearches(ctx, u.ID, []int64{id}, SearchPatch{
+		Params: map[string]string{"only": "this"}, ReplaceParams: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	se, _ = st.GetSearch(ctx, id)
+	if len(se.Params) != 1 || se.Params["only"] != "this" {
+		t.Fatalf("replace should drop everything else: %v", se.Params)
+	}
+}
+
+func TestPatchSearchesClearsPricesWithNegative(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-pc2", "pc2@example.com", "Pc")
+	min, max := 5.0, 50.0
+	id, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+		MinPrice: &min, MaxPrice: &max,
+	})
+
+	clear := -1.0
+	if _, err := st.PatchSearches(ctx, u.ID, []int64{id}, SearchPatch{MinPrice: &clear}); err != nil {
+		t.Fatal(err)
+	}
+	se, _ := st.GetSearch(ctx, id)
+	if se.MinPrice != nil {
+		t.Errorf("a negative min should clear the bound, got %v", *se.MinPrice)
+	}
+	if se.MaxPrice == nil || *se.MaxPrice != 50 {
+		t.Error("max must be untouched")
+	}
+}
+
+func TestPatchSearchesEmptyIsNoOp(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-pe", "pe@example.com", "Pe")
+	id, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	n, err := st.PatchSearches(ctx, u.ID, []int64{id}, SearchPatch{})
+	if err != nil || n != 0 {
+		t.Fatalf("an empty patch must change nothing, got n=%d err=%v", n, err)
+	}
+}
+
+func TestSourcePauseKeepsManualPauses(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-sp", "sp@example.com", "Sp")
+
+	manual, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "manually paused", Interval: time.Minute, Enabled: false,
+	})
+	running, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "running", Interval: time.Minute, Enabled: true,
+	})
+	other, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "rakuma", Query: "other source", Interval: time.Minute, Enabled: true,
+	})
+
+	enabledIDs := func() map[int64]bool {
+		t.Helper()
+		list, err := st.ListSearches(ctx, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[int64]bool{}
+		for _, se := range list {
+			got[se.ID] = true
+		}
+		return got
+	}
+
+	if got := enabledIDs(); !got[running] || !got[other] || got[manual] {
+		t.Fatalf("baseline wrong: %v", got)
+	}
+
+	if err := st.SetSourcePaused(ctx, u.ID, "mercari", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := enabledIDs(); got[running] || got[manual] || !got[other] {
+		t.Fatalf("pausing mercari must hide only mercari searches: %v", got)
+	}
+
+	for _, id := range []int64{manual, running} {
+		se, _ := st.GetSearch(ctx, id)
+		if id == running && !se.Enabled {
+			t.Error("a global pause must not clear the per-search enabled flag")
+		}
+		if id == manual && se.Enabled {
+			t.Error("a manually paused search must stay disabled")
+		}
+	}
+
+	if err := st.SetSourcePaused(ctx, u.ID, "mercari", false); err != nil {
+		t.Fatal(err)
+	}
+	got := enabledIDs()
+	if !got[running] {
+		t.Error("unpausing must bring back the search that was running")
+	}
+	if got[manual] {
+		t.Error("unpausing must NOT resurrect a manually paused search")
+	}
+	if !got[other] {
+		t.Error("the untouched source must still run")
+	}
+}
+
+func TestSourcePauseIsPerUser(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	a, _ := st.UserFromIdentity(ctx, "sub-pa", "pa@example.com", "A")
+	b, _ := st.UserFromIdentity(ctx, "sub-pb", "pb@example.com", "B")
+
+	sa, _ := st.CreateSearch(ctx, Search{UserID: a.ID, Source: "mercari", Query: "a", Interval: time.Minute, Enabled: true})
+	sb, _ := st.CreateSearch(ctx, Search{UserID: b.ID, Source: "mercari", Query: "b", Interval: time.Minute, Enabled: true})
+
+	if err := st.SetSourcePaused(ctx, a.ID, "mercari", true); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := st.ListSearches(ctx, true)
+	seen := map[int64]bool{}
+	for _, se := range list {
+		seen[se.ID] = true
+	}
+	if seen[sa] {
+		t.Error("user A's mercari search should be paused")
+	}
+	if !seen[sb] {
+		t.Error("user B must be unaffected by user A's pause")
+	}
+}
+
+func TestSourcePauseSurvivesExclusionEdits(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-se", "se@example.com", "Se")
+
+	if err := st.SetSourcePaused(ctx, u.ID, "mercari", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{Source: "mercari", Exclude: "ONE PIECE"}); err != nil {
+		t.Fatal(err)
+	}
+	paused, _ := st.PausedSources(ctx, u.ID)
+	if !paused["mercari"] {
+		t.Fatal("setting exclusions must not clear the pause")
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{Source: "mercari"}); err != nil {
+		t.Fatal(err)
+	}
+	paused, _ = st.PausedSources(ctx, u.ID)
+	if !paused["mercari"] {
+		t.Fatal("clearing exclusions must not clear the pause")
+	}
+	ex, _ := st.SourceExclusions(ctx, u.ID)
+	if ex["mercari"].Exclude != "" {
+		t.Fatalf("exclusions should be cleared, got %q", ex["mercari"].Exclude)
+	}
+
+	if err := st.SetSourcePaused(ctx, u.ID, "mercari", false); err != nil {
+		t.Fatal(err)
+	}
+	ex, _ = st.SourceExclusions(ctx, u.ID)
+	if len(ex) != 0 {
+		t.Fatalf("a fully empty row should be cleaned up, got %v", ex)
+	}
+}
+
+func TestSourceExclusionsReportPaused(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-sr", "sr@example.com", "Sr")
+
+	if err := st.SetSourcePaused(ctx, u.ID, "yahoo", true); err != nil {
+		t.Fatal(err)
+	}
+	ex, err := st.SourceExclusions(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ex["yahoo"].Paused {
+		t.Fatal("SourceExclusions must surface the paused flag for the UI")
+	}
+}
+
+func TestPausedColumnMigratesOntoOldDB(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/old.db"
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE);
+		CREATE TABLE source_exclusions (
+		    user_id            INTEGER NOT NULL,
+		    source             TEXT NOT NULL,
+		    exclude            TEXT NOT NULL DEFAULT '',
+		    exclude_categories TEXT NOT NULL DEFAULT '',
+		    PRIMARY KEY (user_id, source)
+		);
+		INSERT INTO users (name, email) VALUES ('Old', 'old@example.com');
+		INSERT INTO source_exclusions (user_id, source, exclude) VALUES (1, 'mercari', 'ONE PIECE');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("opening a pre-existing db must migrate cleanly: %v", err)
+	}
+	defer st.Close()
+
+	ex, err := st.SourceExclusions(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex["mercari"].Exclude != "ONE PIECE" {
+		t.Fatalf("existing exclusions must survive: %v", ex)
+	}
+	if ex["mercari"].Paused {
+		t.Fatal("pre-existing rows must default to not paused")
+	}
+
+	if err := st.SetSourcePaused(ctx, 1, "mercari", true); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := st.PausedSources(ctx, 1); !p["mercari"] {
+		t.Fatal("pausing must work after migration")
 	}
 }

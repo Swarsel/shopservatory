@@ -106,10 +106,43 @@ const pageTemplate = `<!doctype html>
       <button type="button" id="bulk-run">Check selected</button>
       <button type="button" id="bulk-pause">Pause selected</button>
       <button type="button" id="bulk-resume">Resume selected</button>
+      <button type="button" id="bulk-edit">Edit selected</button>
       <button type="button" id="bulk-repopulate">Repopulate selected</button>
       <button type="button" id="bulk-delete">Delete selected</button>
     </div>
     <p class="muted" id="searches-empty" style="display:none">No searches yet — add one above.</p>
+  </div>
+
+  <div id="bulkedit" style="display:none;position:fixed;inset:0;background:#0009;z-index:50">
+    <div style="max-width:640px;margin:6vh auto;padding:1.2rem;border-radius:10px;background:Canvas;max-height:86vh;overflow:auto">
+      <h3 style="margin-top:0" id="bulkedit-title">Edit searches</h3>
+      <p class="muted" id="bulkedit-hint">Only the fields you fill in are changed; blank fields are left as they are.</p>
+      <div class="row">
+        <div><label>Interval</label><input id="be-interval" placeholder="e.g. 30m, 1h — blank = unchanged"></div>
+      </div>
+      <div class="row">
+        <div><label>Min price <span class="muted">(-1 clears)</span></label><input id="be-min" type="number" step="any" placeholder="unchanged"></div>
+        <div><label>Max price <span class="muted">(-1 clears)</span></label><input id="be-max" type="number" step="any" placeholder="unchanged"></div>
+      </div>
+      <label>Exclude keywords <span class="muted">(tick to apply, empty clears)</span></label>
+      <div class="feedbar"><input type="checkbox" id="be-exclude-on"><input id="be-exclude" placeholder="ONE PIECE, reprint"></div>
+      <label>Exclude categories <span class="muted">(tick to apply, empty clears)</span></label>
+      <div class="feedbar"><input type="checkbox" id="be-excat-on"><input id="be-excat" placeholder="3088, 733"></div>
+      <label>Params (key=value per line) <span class="muted">(tick to apply; in merge mode an empty value removes a key)</span></label>
+      <div class="feedbar" style="align-items:flex-start">
+        <input type="checkbox" id="be-params-on">
+        <textarea id="be-params" rows="3" placeholder="sort=newlyListed"></textarea>
+        <select id="be-params-mode">
+          <option value="merge">merge with existing</option>
+          <option value="replace">replace all params</option>
+        </select>
+      </div>
+      <p>
+        <button type="button" id="be-apply">Apply</button>
+        <button type="button" id="be-cancel">Cancel</button>
+        <span class="muted" id="be-status"></span>
+      </p>
+    </div>
   </div>
 
   <h2 class="fold-h" id="monitors-head">▸ Monitoring</h2>
@@ -172,14 +205,16 @@ const pageTemplate = `<!doctype html>
         <span class="muted" id="settings-status" style="font-size:.8rem"></span>
       </div>
     </form>
-    <h3>Per-source exclusions</h3>
+    <h3>Per-source settings</h3>
+    <p class="muted">Pausing a source stops every search on it from running, without changing each
+      search's own pause state — unpausing brings back exactly the searches that were running before.</p>
     <p class="muted">Applied to every search on that source, on top of the search's own exclusions.
       Category ids work on mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty and rakuma —
       each find's id is shown on its card. On mercari, ebay, willhaben and rakuma a parent id also
       excludes its children (rakuma: 10005 = メンズ); craigslist, jmty and kleinanzeigen match exact
       ids only.</p>
     <table>
-      <thead><tr><th>Source</th><th>Exclude keywords</th><th>Exclude category ids</th><th></th></tr></thead>
+      <thead><tr><th>Source</th><th>Paused</th><th>Exclude keywords</th><th>Exclude category ids</th><th></th></tr></thead>
       <tbody id="srcex"></tbody>
     </table>
     <h3>Change password</h3>
@@ -392,6 +427,9 @@ const pageTemplate = `<!doctype html>
       act.appendChild(btn('check all', function(){ bulkRun(ids); }));
       var allOn = enabledCount === g.items.length;
       act.appendChild(btn(allOn ? 'pause all' : 'resume all', function(){ bulkEnable(ids, !allOn); }));
+      act.appendChild(btn('edit all', function(){
+        openBulkEdit(ids, first.query);
+      }));
       act.appendChild(btn('repopulate all', function(){
         if (confirm('Delete the stored finds for all ' + g.items.length + ' searches for “' + first.query + '” and fetch them again?')) {
           bulkRepopulate(ids);
@@ -422,7 +460,16 @@ const pageTemplate = `<!doctype html>
       qcell.appendChild(document.createTextNode(se.query.length > 70 ? se.query.slice(0, 70) + '…' : se.query));
       qcell.title = se.query; tr.appendChild(qcell);
       tr.appendChild(el('td', null, se.interval));
-      var st = el('td'); st.appendChild(el('span','pill', se.enabled ? 'enabled' : 'paused')); tr.appendChild(st);
+      var st = el('td');
+      if (pausedSources[se.source]) {
+        var sp = el('span','pill','source paused');
+        sp.title = sourceName(se.source) + ' is paused in settings, so this search will not run' +
+          (se.enabled ? '' : ' (it is also paused on its own)');
+        st.appendChild(sp);
+      } else {
+        st.appendChild(el('span','pill', se.enabled ? 'enabled' : 'paused'));
+      }
+      tr.appendChild(st);
       tr.appendChild(el('td', 'muted', se.lastRun));
       var act = el('td','actions');
       act.appendChild(btn('run', function(){ action('/searches/'+se.id+'/run'); }));
@@ -460,6 +507,48 @@ const pageTemplate = `<!doctype html>
     function bulkEnable(ids, enabled) { bulkPost('/searches/enable', ids, {enabled: enabled ? '1' : '0'}, false, 'Could not update searches'); }
     function bulkRun(ids) { bulkPost('/searches/run', ids, null, false, 'Could not run searches'); }
     function bulkRepopulate(ids) { bulkPost('/searches/repopulate', ids, null, false, 'Could not repopulate searches'); }
+
+    var bulkEditIds = [];
+    function openBulkEdit(ids, label) {
+      if (!ids.length) return;
+      bulkEditIds = ids;
+      document.getElementById('bulkedit-title').textContent = 'Edit ' + ids.length + ' search(es)' + (label ? ' — ' + label : '');
+      ['be-interval','be-min','be-max','be-exclude','be-excat','be-params'].forEach(function(id){
+        document.getElementById(id).value = '';
+      });
+      ['be-exclude-on','be-excat-on','be-params-on'].forEach(function(id){
+        document.getElementById(id).checked = false;
+      });
+      document.getElementById('be-params-mode').value = 'merge';
+      document.getElementById('be-status').textContent = '';
+      document.getElementById('bulkedit').style.display = '';
+    }
+    function closeBulkEdit(){ document.getElementById('bulkedit').style.display = 'none'; }
+
+    document.getElementById('be-cancel').onclick = closeBulkEdit;
+    document.getElementById('bulkedit').onclick = function(e){ if (e.target === this) closeBulkEdit(); };
+    document.getElementById('be-apply').onclick = function(){
+      var f = new URLSearchParams();
+      bulkEditIds.forEach(function(id){ f.append('id', id); });
+      var v;
+      v = document.getElementById('be-interval').value.trim(); if (v) f.set('interval', v);
+      v = document.getElementById('be-min').value.trim(); if (v) f.set('min_price', v);
+      v = document.getElementById('be-max').value.trim(); if (v) f.set('max_price', v);
+      if (document.getElementById('be-exclude-on').checked) f.set('exclude', document.getElementById('be-exclude').value);
+      if (document.getElementById('be-excat-on').checked) f.set('exclude_categories', document.getElementById('be-excat').value);
+      if (document.getElementById('be-params-on').checked) {
+        f.set('params', document.getElementById('be-params').value);
+        f.set('params_mode', document.getElementById('be-params-mode').value);
+      }
+      var status = document.getElementById('be-status');
+      status.textContent = 'applying…';
+      fetch('/searches/patch', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
+        .then(function(r){
+          if (r.status===204 || r.ok) { closeBulkEdit(); selectedSearches = {}; refresh(); }
+          else { r.text().then(function(t){ status.textContent = t.trim() || 'failed'; }); }
+        })
+        .catch(function(){ status.textContent = 'failed'; });
+    };
 
     function sourceBoxes(){ return document.querySelectorAll('#f-sources input[name=source]'); }
     function setSources(ids){ sourceBoxes().forEach(function(b){ b.checked = ids.indexOf(b.value) >= 0; }); }
@@ -503,6 +592,9 @@ const pageTemplate = `<!doctype html>
     document.getElementById('bulk-run').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkRun(ids); };
     document.getElementById('bulk-pause').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkEnable(ids, false); };
     document.getElementById('bulk-resume').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkEnable(ids, true); };
+    document.getElementById('bulk-edit').onclick = function(){
+      openBulkEdit(selectedIds(), 'selected');
+    };
     document.getElementById('bulk-repopulate').onclick = function(){
       var ids = selectedIds();
       if (!ids.length) return;
@@ -629,6 +721,7 @@ const pageTemplate = `<!doctype html>
       renderSourceExclusions(st.sourceExclude || {});
     }
 
+    var pausedSources = {};
     var srcExDirty = {};
     function renderSourceExclusions(byId){
       var tb = document.getElementById('srcex');
@@ -638,6 +731,24 @@ const pageTemplate = `<!doctype html>
         var cur = byId[src.id] || {};
         var tr = el('tr');
         tr.appendChild(el('td', null, src.name));
+        var pauseCell = el('td');
+        var pause = el('input');
+        pause.type = 'checkbox';
+        pause.checked = !!cur.paused;
+        pause.title = 'Pause every search on ' + src.name;
+        pause.onchange = function(){
+          var f = new URLSearchParams();
+          f.set('source', src.id);
+          f.set('paused', pause.checked ? '1' : '0');
+          fetch('/settings/source/pause', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
+            .then(function(r){
+              if (r.status===204 || r.ok) { refresh(); }
+              else { pause.checked = !pause.checked; alert('Could not change the pause state for ' + src.name); }
+            })
+            .catch(function(){ pause.checked = !pause.checked; alert('Could not change the pause state for ' + src.name); });
+        };
+        pauseCell.appendChild(pause);
+        tr.appendChild(pauseCell);
         var kwCell = el('td');
         var kw = el('input'); kw.value = cur.exclude || ''; kw.placeholder = 'ONE PIECE, reprint';
         kw.oninput = function(){ srcExDirty[src.id] = true; };
@@ -950,6 +1061,9 @@ const pageTemplate = `<!doctype html>
       return fetch('/api/state?' + params.toString(), {headers:{'Accept':'application/json'}})
         .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
         .then(function(s){
+          pausedSources = {};
+          var ex = (s.settings||{}).sourceExclude || {};
+          Object.keys(ex).forEach(function(id){ if (ex[id].paused) pausedSources[id] = true; });
           renderSearches(s.searches||[]); renderMonitors(s.monitors||[]);
           renderFeed(s.listings||[], s.listingsTotal||0, s.listingsPage||1, s.listingsPages||1);
           renderSettings(s.settings||{}); renderMe(s.me||{}); renderUsers(s.users||[]);

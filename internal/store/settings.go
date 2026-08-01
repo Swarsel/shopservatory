@@ -78,11 +78,12 @@ type SourceExclusion struct {
 	Source            string
 	Exclude           string
 	ExcludeCategories string
+	Paused            bool
 }
 
 func (s *Store) SourceExclusions(ctx context.Context, userID int64) (map[string]SourceExclusion, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT source, exclude, exclude_categories FROM source_exclusions WHERE user_id = ?`, userID)
+		`SELECT source, exclude, exclude_categories, paused FROM source_exclusions WHERE user_id = ?`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +91,7 @@ func (s *Store) SourceExclusions(ctx context.Context, userID int64) (map[string]
 	out := map[string]SourceExclusion{}
 	for rows.Next() {
 		var e SourceExclusion
-		if err := rows.Scan(&e.Source, &e.Exclude, &e.ExcludeCategories); err != nil {
+		if err := rows.Scan(&e.Source, &e.Exclude, &e.ExcludeCategories, &e.Paused); err != nil {
 			return nil, err
 		}
 		out[e.Source] = e
@@ -101,7 +102,13 @@ func (s *Store) SourceExclusions(ctx context.Context, userID int64) (map[string]
 func (s *Store) SetSourceExclusion(ctx context.Context, userID int64, e SourceExclusion) error {
 	if strings.TrimSpace(e.Exclude) == "" && strings.TrimSpace(e.ExcludeCategories) == "" {
 		_, err := s.db.ExecContext(ctx,
-			`DELETE FROM source_exclusions WHERE user_id = ? AND source = ?`, userID, e.Source)
+			`UPDATE source_exclusions SET exclude = '', exclude_categories = ''
+			 WHERE user_id = ? AND source = ?`, userID, e.Source)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx,
+			`DELETE FROM source_exclusions WHERE user_id = ? AND source = ? AND paused = 0`, userID, e.Source)
 		return err
 	}
 	_, err := s.db.ExecContext(ctx,
@@ -111,6 +118,42 @@ func (s *Store) SetSourceExclusion(ctx context.Context, userID int64, e SourceEx
 		                                            exclude_categories = excluded.exclude_categories`,
 		userID, e.Source, strings.TrimSpace(e.Exclude), strings.TrimSpace(e.ExcludeCategories))
 	return err
+}
+
+func (s *Store) SetSourcePaused(ctx context.Context, userID int64, src string, paused bool) error {
+	if !paused {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE source_exclusions SET paused = 0 WHERE user_id = ? AND source = ?`, userID, src)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx,
+			`DELETE FROM source_exclusions
+			 WHERE user_id = ? AND source = ? AND exclude = '' AND exclude_categories = ''`, userID, src)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO source_exclusions (user_id, source, paused) VALUES (?, ?, 1)
+		 ON CONFLICT(user_id, source) DO UPDATE SET paused = 1`, userID, src)
+	return err
+}
+
+func (s *Store) PausedSources(ctx context.Context, userID int64) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT source FROM source_exclusions WHERE user_id = ? AND paused = 1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var src string
+		if err := rows.Scan(&src); err != nil {
+			return nil, err
+		}
+		out[src] = true
+	}
+	return out, rows.Err()
 }
 
 func mergeLists(a, b string) string {
