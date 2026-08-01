@@ -106,6 +106,7 @@ const pageTemplate = `<!doctype html>
       <button type="button" id="bulk-run">Check selected</button>
       <button type="button" id="bulk-pause">Pause selected</button>
       <button type="button" id="bulk-resume">Resume selected</button>
+      <button type="button" id="bulk-repopulate">Repopulate selected</button>
       <button type="button" id="bulk-delete">Delete selected</button>
     </div>
     <p class="muted" id="searches-empty" style="display:none">No searches yet — add one above.</p>
@@ -391,6 +392,11 @@ const pageTemplate = `<!doctype html>
       act.appendChild(btn('check all', function(){ bulkRun(ids); }));
       var allOn = enabledCount === g.items.length;
       act.appendChild(btn(allOn ? 'pause all' : 'resume all', function(){ bulkEnable(ids, !allOn); }));
+      act.appendChild(btn('repopulate all', function(){
+        if (confirm('Delete the stored finds for all ' + g.items.length + ' searches for “' + first.query + '” and fetch them again?')) {
+          bulkRepopulate(ids);
+        }
+      }));
       act.appendChild(btn('delete all', function(){
         if (confirm('Delete all ' + g.items.length + ' searches for “' + first.query + '”?')) bulkDelete(ids);
       }));
@@ -422,6 +428,12 @@ const pageTemplate = `<!doctype html>
       act.appendChild(btn('run', function(){ action('/searches/'+se.id+'/run'); }));
       act.appendChild(btn(se.enabled ? 'pause' : 'resume', function(){ action('/searches/'+se.id+'/toggle'); }));
       act.appendChild(btn('edit', function(){ startEdit(se); }));
+      act.appendChild(btn('repopulate', function(){
+        if(confirm('Delete the stored finds for “' + se.query + '” (' + sourceName(se.source) + ') and fetch them again?\n\n' +
+                   'Re-seeds silently, so no notifications for re-discovered items.')) {
+          action('/searches/'+se.id+'/repopulate');
+        }
+      }));
       act.appendChild(btn('delete', function(){
         if(confirm('Delete search “' + se.query + '” (' + sourceName(se.source) + ') and its history?')) action('/searches/'+se.id+'/delete');
       }));
@@ -447,6 +459,7 @@ const pageTemplate = `<!doctype html>
     function bulkDelete(ids) { bulkPost('/searches/delete', ids, null, true, 'Could not delete searches'); }
     function bulkEnable(ids, enabled) { bulkPost('/searches/enable', ids, {enabled: enabled ? '1' : '0'}, false, 'Could not update searches'); }
     function bulkRun(ids) { bulkPost('/searches/run', ids, null, false, 'Could not run searches'); }
+    function bulkRepopulate(ids) { bulkPost('/searches/repopulate', ids, null, false, 'Could not repopulate searches'); }
 
     function sourceBoxes(){ return document.querySelectorAll('#f-sources input[name=source]'); }
     function setSources(ids){ sourceBoxes().forEach(function(b){ b.checked = ids.indexOf(b.value) >= 0; }); }
@@ -490,6 +503,14 @@ const pageTemplate = `<!doctype html>
     document.getElementById('bulk-run').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkRun(ids); };
     document.getElementById('bulk-pause').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkEnable(ids, false); };
     document.getElementById('bulk-resume').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkEnable(ids, true); };
+    document.getElementById('bulk-repopulate').onclick = function(){
+      var ids = selectedIds();
+      if (!ids.length) return;
+      if (confirm('Delete the stored finds for ' + ids.length + ' search(es) and fetch them again?\n\n' +
+                  'Use this after changing exclusions so old items get re-scraped with the new rules.')) {
+        bulkRepopulate(ids);
+      }
+    };
     document.getElementById('bulk-delete').onclick = function(){
       var ids = selectedIds();
       if (!ids.length) return;

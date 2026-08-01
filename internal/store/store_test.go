@@ -541,3 +541,55 @@ func TestFeedCategoryExclusionMatchesParentViaChainPerSource(t *testing.T) {
 		t.Fatalf("expected 3 kept, got %d: %v", total, kept)
 	}
 }
+
+func TestRepopulateSearch(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-rp", "rp@example.com", "Rp")
+
+	a, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "rakuma", Query: "a", Interval: time.Minute, Enabled: true,
+	})
+	b, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "rakuma", Query: "b", Interval: time.Minute, Enabled: true,
+	})
+	for i, sid := range []int64{a, a, b} {
+		if _, _, err := st.RecordListing(ctx, sid, "rakuma",
+			source.Listing{
+				ExternalID: string(rune('a' + i)),
+				Title:      "item",
+				Extra:      map[string]string{"category": "735"},
+			}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.TouchSearchRun(ctx, a, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if se, _ := st.GetSearch(ctx, a); se.LastRunAt == nil {
+		t.Fatal("precondition: search a should have run")
+	}
+
+	removed, err := st.RepopulateSearch(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Fatalf("expected 2 listings removed, got %d", removed)
+	}
+
+	se, _ := st.GetSearch(ctx, a)
+	if se.LastRunAt != nil {
+		t.Error("last_run_at must be cleared so the next poll re-seeds silently")
+	}
+	if se.Query != "a" || !se.Enabled {
+		t.Error("the search itself must survive repopulation")
+	}
+
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 100, 0); total != 1 {
+		t.Fatalf("only search b's listing should remain, got %d", total)
+	}
+	if seB, _ := st.GetSearch(ctx, b); seB.LastRunAt != nil {
+		t.Error("repopulating one search must not touch another")
+	}
+}

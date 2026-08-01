@@ -375,6 +375,19 @@ func (s *Store) DeleteSearch(ctx context.Context, id int64) error {
 	return err
 }
 
+func (s *Store) RepopulateSearch(ctx context.Context, id int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM listings WHERE search_id = ?`, id)
+	if err != nil {
+		return 0, err
+	}
+	removed, _ := res.RowsAffected()
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE searches SET last_run_at = NULL WHERE id = ?`, id); err != nil {
+		return removed, err
+	}
+	return removed, nil
+}
+
 func (s *Store) DeleteSearches(ctx context.Context, userID int64, ids []int64) (int64, error) {
 	return s.bulkSearch(ctx, `DELETE FROM searches`, userID, ids)
 }

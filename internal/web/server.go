@@ -117,6 +117,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /searches/delete", b(http.HandlerFunc(s.handleBulkDelete)))
 	mux.Handle("POST /searches/enable", b(http.HandlerFunc(s.handleBulkEnable)))
 	mux.Handle("POST /searches/run", b(http.HandlerFunc(s.handleBulkRun)))
+	mux.Handle("POST /searches/repopulate", b(http.HandlerFunc(s.handleBulkRepopulate)))
+	mux.Handle("POST /searches/{id}/repopulate", b(http.HandlerFunc(s.handleRepopulate)))
 	mux.Handle("POST /searches/{id}/toggle", b(http.HandlerFunc(s.handleToggle)))
 	mux.Handle("POST /searches/{id}/run", b(http.HandlerFunc(s.handleRun)))
 	mux.Handle("POST /image_search", b(http.HandlerFunc(s.handleImageSearch)))
@@ -843,6 +845,49 @@ func (s *Server) handleBulkRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, id := range owned {
+		s.sched.RunNow(id)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRepopulate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := s.ownedSearch(w, r, id); !ok {
+		return
+	}
+	removed, err := s.store.RepopulateSearch(r.Context(), id)
+	if err != nil {
+		s.fail(w, "repopulate search", err)
+		return
+	}
+	s.log.Info("web: repopulating search", "search", id, "removed", removed)
+	s.sched.RunNow(id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleBulkRepopulate(w http.ResponseWriter, r *http.Request) {
+	ids, err := bulkSearchIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(ids) == 0 {
+		http.Error(w, "no search ids provided", http.StatusBadRequest)
+		return
+	}
+	owned, err := s.store.OwnedSearchIDs(r.Context(), auth.UserID(r.Context()), ids)
+	if err != nil {
+		s.fail(w, "repopulate searches", err)
+		return
+	}
+	for _, id := range owned {
+		if _, err := s.store.RepopulateSearch(r.Context(), id); err != nil {
+			s.fail(w, "repopulate search", err)
+			return
+		}
 		s.sched.RunNow(id)
 	}
 	w.WriteHeader(http.StatusNoContent)
