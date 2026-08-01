@@ -125,6 +125,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /monitors/{id}/update", b(http.HandlerFunc(s.handleUpdateMonitor)))
 	mux.Handle("POST /monitors/{id}/delete", b(http.HandlerFunc(s.handleDeleteMonitor)))
 	mux.Handle("POST /monitors/{id}/run", b(http.HandlerFunc(s.handleRunMonitor)))
+	mux.Handle("POST /monitors/{id}/toggle", b(http.HandlerFunc(s.handleToggleMonitor)))
+	mux.Handle("POST /monitors/{id}/archive", b(http.HandlerFunc(s.handleArchiveMonitor)))
 	mux.Handle("POST /settings", b(http.HandlerFunc(s.handleSettings)))
 	mux.Handle("POST /password", b(http.HandlerFunc(s.handlePassword)))
 	mux.Handle("POST /admin/users", b(s.requireAdmin(http.HandlerFunc(s.handleAdminCreateUser))))

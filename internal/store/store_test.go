@@ -187,3 +187,48 @@ func TestBulkEnableAndOwnership(t *testing.T) {
 		t.Fatalf("OwnedSearchIDs must exclude bob's id, got %v", owned)
 	}
 }
+
+func TestMonitorPauseAndArchive(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-mon", "mon@example.com", "Mona")
+
+	id, err := st.AddMonitor(ctx, MonitoredItem{
+		UserID: u.ID, Source: "mercari", ExternalID: "m1", URL: "https://x/m1",
+		Title: "Item", LastPrice: 100, Status: "active", Interval: time.Hour, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	due, _ := st.DueMonitors(ctx)
+	if len(due) != 1 {
+		t.Fatalf("expected 1 due monitor, got %d", len(due))
+	}
+
+	if err := st.SetMonitorEnabled(ctx, id, false); err != nil {
+		t.Fatal(err)
+	}
+	if due, _ = st.DueMonitors(ctx); len(due) != 0 {
+		t.Fatalf("paused monitor must not be due, got %d", len(due))
+	}
+	if m, _ := st.GetMonitor(ctx, id); m.Enabled || m.Archived {
+		t.Fatalf("expected paused+unarchived, got %+v", m)
+	}
+
+	if err := st.SetMonitorEnabled(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetMonitorArchived(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if due, _ = st.DueMonitors(ctx); len(due) != 0 {
+		t.Fatalf("archived monitor must not be due, got %d", len(due))
+	}
+	m, _ := st.GetMonitor(ctx, id)
+	if !m.Archived || m.LastPrice != 100 {
+		t.Fatalf("archive must keep the row and final price, got %+v", m)
+	}
+	if hist, _ := st.PriceHistory(ctx, id); len(hist) != 1 {
+		t.Fatalf("price history must survive archiving, got %d points", len(hist))
+	}
+}

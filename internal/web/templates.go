@@ -112,6 +112,13 @@ const pageTemplate = `<!doctype html>
       <tbody id="monitors"></tbody>
     </table>
     <p class="muted" id="monitors-empty" style="display:none">Nothing monitored yet — paste an item URL above, or click “monitor” on a find.</p>
+    <h3 class="fold-h" id="marchive-head" style="display:none">▸ Archived items</h3>
+    <div id="marchive-wrap" style="display:none">
+      <table>
+        <thead><tr><th></th><th>Source</th><th>Item</th><th>Final price</th><th>Status</th><th></th><th>Last checked</th><th></th></tr></thead>
+        <tbody id="monitors-archived"></tbody>
+      </table>
+    </div>
   </div>
 
   <h2 class="fold-h" id="imgsearch-head">▸ Image search</h2>
@@ -690,33 +697,62 @@ const pageTemplate = `<!doctype html>
     });
 
     var monExpanded = {};
+    var currentMonitors = [];
+    var archiveOpen = false;
     function renderMonitors(list) {
+      currentMonitors = list;
+      var active = list.filter(function(m){ return !m.archived; });
+      var archived = list.filter(function(m){ return m.archived; });
       var tb = document.getElementById('monitors');
       tb.replaceChildren();
-      document.getElementById('monitors-empty').style.display = list.length ? 'none' : '';
-      list.forEach(function (m) {
-        var tr = el('tr');
-        var exp = el('td');
-        var t = el('button','expander', monExpanded[m.id] ? '▾' : '▸'); t.type='button';
-        t.onclick = function(){ monExpanded[m.id] = !monExpanded[m.id]; renderMonitors(list); };
-        exp.appendChild(t); tr.appendChild(exp);
-        tr.appendChild(el('td', null, sourceName(m.source)));
-        var itd = el('td');
-        if (m.imageUrl) { var im = el('img','mthumb'); im.src='/img?u='+encodeURIComponent(m.imageUrl); im.loading='lazy'; im.onerror=function(){ im.style.display='none'; }; itd.appendChild(im); }
-        var a = el('a','title'); a.href=m.url; a.target='_blank'; a.rel='noopener'; a.textContent = m.title || m.url; itd.appendChild(a); tr.appendChild(itd);
-        var ptd = el('td'); ptd.textContent = m.price || ''; if (m.priceApprox) { ptd.appendChild(el('span','approx','  '+m.priceApprox)); } tr.appendChild(ptd);
-        var std = el('td'); std.appendChild(el('span','status-'+(m.status||'active'), m.status||'active'));
+      document.getElementById('monitors-empty').style.display = active.length ? 'none' : '';
+      active.forEach(function(m){ renderMonitorRow(tb, m, false); });
+
+      var ahead = document.getElementById('marchive-head');
+      ahead.style.display = archived.length ? '' : 'none';
+      ahead.textContent = (archiveOpen ? '▾' : '▸') + ' Archived items (' + archived.length + ')';
+      document.getElementById('marchive-wrap').style.display = archived.length && archiveOpen ? '' : 'none';
+      var atb = document.getElementById('monitors-archived');
+      atb.replaceChildren();
+      if (archiveOpen) archived.forEach(function(m){ renderMonitorRow(atb, m, true); });
+    }
+
+    document.getElementById('marchive-head').onclick = function(){
+      archiveOpen = !archiveOpen;
+      renderMonitors(currentMonitors);
+    };
+
+    function renderMonitorRow(tb, m, isArchived) {
+      var tr = el('tr');
+      var exp = el('td');
+      var t = el('button','expander', monExpanded[m.id] ? '▾' : '▸'); t.type='button';
+      t.onclick = function(){ monExpanded[m.id] = !monExpanded[m.id]; renderMonitors(currentMonitors); };
+      exp.appendChild(t); tr.appendChild(exp);
+      tr.appendChild(el('td', null, sourceName(m.source)));
+      var itd = el('td');
+      if (m.imageUrl) { var im = el('img','mthumb'); im.src='/img?u='+encodeURIComponent(m.imageUrl); im.loading='lazy'; im.onerror=function(){ im.style.display='none'; }; itd.appendChild(im); }
+      var a = el('a','title'); a.href=m.url; a.target='_blank'; a.rel='noopener'; a.textContent = m.title || m.url; itd.appendChild(a); tr.appendChild(itd);
+      var ptd = el('td'); ptd.textContent = m.price || ''; if (m.priceApprox) { ptd.appendChild(el('span','approx','  '+m.priceApprox)); } tr.appendChild(ptd);
+      var std = el('td'); std.appendChild(el('span','status-'+(m.status||'active'), m.status||'active'));
+      if (!isArchived && !m.enabled) { var pp = el('span','pill','paused'); pp.style.marginLeft='.3rem'; std.appendChild(pp); }
+      if (!isArchived) {
         var mtl = timeLeftSec(m.ends);
         if (mtl) {
           var mts=el('div','muted',mtl); mts.style.fontSize='.75rem'; mts.setAttribute('data-ends', m.ends);
           mts.title = endDateLabel(m.ends);
           std.appendChild(mts);
         }
-        tr.appendChild(std);
-        tr.appendChild(el('td','muted', m.interval || ''));
-        tr.appendChild(el('td','muted', m.lastChecked));
-        var act = el('td','actions');
+      }
+      tr.appendChild(std);
+      tr.appendChild(el('td','muted', isArchived ? '' : (m.interval || '')));
+      tr.appendChild(el('td','muted', m.lastChecked));
+      var act = el('td','actions');
+      if (isArchived) {
+        act.appendChild(btn('unarchive', function(){ action('/monitors/'+m.id+'/archive'); }));
+        act.appendChild(btn('delete', function(){ if(confirm('Delete archived item “' + (m.title || m.url) + '” and its price history?')) action('/monitors/'+m.id+'/delete'); }));
+      } else {
         act.appendChild(btn('check', function(){ action('/monitors/'+m.id+'/run'); }));
+        act.appendChild(btn(m.enabled ? 'pause' : 'resume', function(){ action('/monitors/'+m.id+'/toggle'); }));
         act.appendChild(btn('edit', function(){
           var v = prompt('Refresh interval (e.g. 30m, 1h, 6h):', m.interval || '1h');
           if (!v) return;
@@ -724,26 +760,27 @@ const pageTemplate = `<!doctype html>
           fetch('/monitors/'+m.id+'/update', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
             .then(function(r){ if (r.status===204 || r.ok) { refresh(); } else { alert('Invalid interval — use e.g. 30m, 1h, 6h'); } });
         }));
+        act.appendChild(btn('archive', function(){ action('/monitors/'+m.id+'/archive'); }));
         act.appendChild(btn('delete', function(){ if(confirm('Stop monitoring “' + (m.title || m.url) + '”?')) action('/monitors/'+m.id+'/delete'); }));
-        tr.appendChild(act); tb.appendChild(tr);
+      }
+      tr.appendChild(act); tb.appendChild(tr);
 
-        if (monExpanded[m.id]) {
-          var dr = el('tr'); var dc = el('td','detail'); dc.colSpan = 8;
-          var h = m.history || [];
-          if (h.length) {
-            var shown = sparkPoints(h, 120);
-            var max = 0; shown.forEach(function(p){ if (p.price > max) max = p.price; });
-            var sp = el('div','spark');
-            shown.forEach(function(p){ var bar = el('div'); bar.style.height = (max>0 ? Math.max(2, Math.round(p.price/max*40)) : 2)+'px'; bar.title = p.at+': '+p.price+(p.status&&p.status!=='active'?' ('+p.status+')':''); sp.appendChild(bar); });
-            dc.appendChild(sp);
-            var first = h[0], last = h[h.length-1];
-            dc.appendChild(el('div','histrow', h.length+' checks · first '+first.price+' ('+first.at+') · latest '+last.price+' ('+last.at+')'));
-          } else {
-            dc.appendChild(el('div','histrow','no price history yet — it will fill in as checks run'));
-          }
-          dr.appendChild(dc); tb.appendChild(dr);
+      if (monExpanded[m.id]) {
+        var dr = el('tr'); var dc = el('td','detail'); dc.colSpan = 8;
+        var h = m.history || [];
+        if (h.length) {
+          var shown = sparkPoints(h, 120);
+          var max = 0; shown.forEach(function(p){ if (p.price > max) max = p.price; });
+          var sp = el('div','spark');
+          shown.forEach(function(p){ var bar = el('div'); bar.style.height = (max>0 ? Math.max(2, Math.round(p.price/max*40)) : 2)+'px'; bar.title = p.at+': '+p.price+(p.status&&p.status!=='active'?' ('+p.status+')':''); sp.appendChild(bar); });
+          dc.appendChild(sp);
+          var first = h[0], last = h[h.length-1];
+          dc.appendChild(el('div','histrow', h.length+' checks · first '+first.price+' ('+first.at+') · latest '+last.price+' ('+last.at+')'));
+        } else {
+          dc.appendChild(el('div','histrow','no price history yet — it will fill in as checks run'));
         }
-      });
+        dr.appendChild(dc); tb.appendChild(dr);
+      }
     }
 
     function card(item) {

@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS monitored_items (
     created_at       INTEGER NOT NULL,
     last_checked_at  INTEGER,
     ends_at          INTEGER NOT NULL DEFAULT 0,
+    archived         INTEGER NOT NULL DEFAULT 0,
     UNIQUE(user_id, source, external_id)
 );
 
@@ -155,6 +156,9 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "searches", "image", "BLOB"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "monitored_items", "archived", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")

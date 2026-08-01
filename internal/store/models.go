@@ -72,6 +72,7 @@ type MonitoredItem struct {
 	Status        string
 	Interval      time.Duration
 	Enabled       bool
+	Archived      bool
 	CreatedAt     time.Time
 	LastCheckedAt *time.Time
 	EndsAt        *time.Time

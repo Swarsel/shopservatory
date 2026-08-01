@@ -25,6 +25,8 @@ type monitorView struct {
 	Status      string           `json:"status"`
 	SaleType    string           `json:"saleType"`
 	Ends        string           `json:"ends,omitempty"`
+	Enabled     bool             `json:"enabled"`
+	Archived    bool             `json:"archived"`
 	Interval    string           `json:"interval"`
 	LastChecked string           `json:"lastChecked"`
 	History     []pricePointView `json:"history"`
@@ -64,6 +66,7 @@ func (s *Server) monitorViews(ctx context.Context, userID int64, target string) 
 			Price:       priceString(m.LastPrice, m.Currency),
 			PriceApprox: s.fx.FormatFor(m.LastPrice, m.Currency, target),
 			Status:      m.Status, SaleType: m.SaleType, Ends: ends,
+			Enabled: m.Enabled, Archived: m.Archived,
 			Interval: m.Interval.String(), LastChecked: checked, History: points,
 		})
 	}
@@ -194,6 +197,38 @@ func (s *Server) handleDeleteMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.DeleteMonitor(r.Context(), id); err != nil {
 		s.fail(w, "delete monitor", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleToggleMonitor(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	m, ok := s.ownedMonitor(w, r, id)
+	if !ok {
+		return
+	}
+	if err := s.store.SetMonitorEnabled(r.Context(), id, !m.Enabled); err != nil {
+		s.fail(w, "toggle monitor", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleArchiveMonitor(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	m, ok := s.ownedMonitor(w, r, id)
+	if !ok {
+		return
+	}
+	if err := s.store.SetMonitorArchived(r.Context(), id, !m.Archived); err != nil {
+		s.fail(w, "archive monitor", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

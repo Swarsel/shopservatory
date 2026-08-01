@@ -54,7 +54,7 @@ func (s *Store) ListMonitors(ctx context.Context, userID int64) ([]MonitoredItem
 }
 
 func (s *Store) DueMonitors(ctx context.Context) ([]MonitoredItem, error) {
-	rows, err := s.db.QueryContext(ctx, monitorSelect+` WHERE enabled = 1 AND status = 'active'`)
+	rows, err := s.db.QueryContext(ctx, monitorSelect+` WHERE enabled = 1 AND status = 'active' AND archived = 0`)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +69,16 @@ func (s *Store) GetMonitor(ctx context.Context, id int64) (MonitoredItem, error)
 
 func (s *Store) DeleteMonitor(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM monitored_items WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) SetMonitorEnabled(ctx context.Context, id int64, enabled bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE monitored_items SET enabled = ? WHERE id = ?`, boolToInt(enabled), id)
+	return err
+}
+
+func (s *Store) SetMonitorArchived(ctx context.Context, id int64, archived bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE monitored_items SET archived = ? WHERE id = ?`, boolToInt(archived), id)
 	return err
 }
 
@@ -130,7 +140,7 @@ func (s *Store) PriceHistory(ctx context.Context, monitorID int64) ([]PricePoint
 }
 
 const monitorSelect = `SELECT id, user_id, source, external_id, url, title, image_url, currency, sale_type,
-	last_price, status, interval_seconds, enabled, created_at, last_checked_at, ends_at FROM monitored_items`
+	last_price, status, interval_seconds, enabled, created_at, last_checked_at, ends_at, archived FROM monitored_items`
 
 func scanMonitors(rows *sql.Rows) ([]MonitoredItem, error) {
 	var out []MonitoredItem
@@ -153,7 +163,7 @@ func scanMonitor(sc interface{ Scan(...any) error }) (MonitoredItem, error) {
 	)
 	if err := sc.Scan(&m.ID, &m.UserID, &m.Source, &m.ExternalID, &m.URL, &m.Title, &m.ImageURL,
 		&m.Currency, &m.SaleType, &m.LastPrice, &m.Status, &seconds, asBool(&m.Enabled),
-		asTime(&m.CreatedAt), &checked, &endsAt); err != nil {
+		asTime(&m.CreatedAt), &checked, &endsAt, asBool(&m.Archived)); err != nil {
 		return MonitoredItem{}, err
 	}
 	m.Interval = time.Duration(seconds) * time.Second
