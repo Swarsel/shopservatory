@@ -123,3 +123,67 @@ func TestImageSearchRoundTrip(t *testing.T) {
 		t.Fatal("scheduler listing must include the image")
 	}
 }
+
+func TestDeleteSearches(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	alice, _ := st.UserFromIdentity(ctx, "sub-da", "da@example.com", "Alice")
+	bob, _ := st.UserFromIdentity(ctx, "sub-db", "db@example.com", "Bob")
+
+	a1, _ := st.CreateSearch(ctx, Search{UserID: alice.ID, Source: "mercari", Query: "x", Interval: time.Minute, Enabled: true})
+	a2, _ := st.CreateSearch(ctx, Search{UserID: alice.ID, Source: "ebay", Query: "x", Interval: time.Minute, Enabled: true})
+	b1, _ := st.CreateSearch(ctx, Search{UserID: bob.ID, Source: "mercari", Query: "y", Interval: time.Minute, Enabled: true})
+
+	n, err := st.DeleteSearches(ctx, alice.ID, []int64{a1, a2, b1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expected to delete 2 of alice's searches, got %d", n)
+	}
+	if got, _ := st.ListSearchesForUser(ctx, alice.ID); len(got) != 0 {
+		t.Fatalf("alice should have 0 searches, got %d", len(got))
+	}
+	if got, _ := st.ListSearchesForUser(ctx, bob.ID); len(got) != 1 {
+		t.Fatalf("bob's search must survive alice's bulk delete, got %d", len(got))
+	}
+	if n, _ := st.DeleteSearches(ctx, alice.ID, nil); n != 0 {
+		t.Fatalf("empty delete should be a no-op, got %d", n)
+	}
+}
+
+func TestBulkEnableAndOwnership(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	alice, _ := st.UserFromIdentity(ctx, "sub-be-a", "bea@example.com", "Alice")
+	bob, _ := st.UserFromIdentity(ctx, "sub-be-b", "beb@example.com", "Bob")
+
+	a1, _ := st.CreateSearch(ctx, Search{UserID: alice.ID, Source: "mercari", Query: "x", Interval: time.Minute, Enabled: true})
+	a2, _ := st.CreateSearch(ctx, Search{UserID: alice.ID, Source: "ebay", Query: "x", Interval: time.Minute, Enabled: true})
+	b1, _ := st.CreateSearch(ctx, Search{UserID: bob.ID, Source: "mercari", Query: "y", Interval: time.Minute, Enabled: true})
+
+	n, err := st.SetSearchesEnabled(ctx, alice.ID, []int64{a1, a2, b1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 of alice's searches paused, got %d", n)
+	}
+	got, _ := st.ListSearchesForUser(ctx, alice.ID)
+	for _, se := range got {
+		if se.Enabled {
+			t.Fatalf("alice's search %d should be paused", se.ID)
+		}
+	}
+	if bs, _ := st.ListSearchesForUser(ctx, bob.ID); !bs[0].Enabled {
+		t.Fatal("bob's search must remain enabled")
+	}
+
+	owned, err := st.OwnedSearchIDs(ctx, alice.ID, []int64{a1, a2, b1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owned) != 2 {
+		t.Fatalf("OwnedSearchIDs must exclude bob's id, got %v", owned)
+	}
+}

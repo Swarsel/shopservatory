@@ -39,6 +39,8 @@ const pageTemplate = `<!doctype html>
   .detail { font-size: .8rem; color: #aaa9; }
   .detail code { white-space: pre-wrap; }
   .expander { background: none; border: none; cursor: pointer; font-size: .9rem; padding: 0 .3rem; }
+  .grouprow > td { background: #ffffff08; }
+  .childrow > td:nth-child(3) { padding-left: 1.4rem; }
   .cardbtn { margin-top: .4rem; font-size: .75rem; }
   .mthumb { width: 32px; height: 32px; object-fit: cover; vertical-align: middle; margin-right: .45rem; border-radius: 3px; }
   td .title { vertical-align: middle; }
@@ -83,9 +85,16 @@ const pageTemplate = `<!doctype html>
   <h2 class="fold-h" id="searches-head">▸ Searches</h2>
   <div id="searches-section" style="display:none">
     <table>
-      <thead><tr><th></th><th>#</th><th>Source</th><th>Query</th><th>Interval</th><th>Status</th><th>Last run</th><th></th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="sel-all" title="Select all"></th><th></th><th>#</th><th>Source</th><th>Query</th><th>Interval</th><th>Status</th><th>Last run</th><th></th></tr></thead>
       <tbody id="searches"></tbody>
     </table>
+    <div class="feedbar" id="bulk-bar" style="display:none">
+      <span class="muted" id="bulk-count"></span>
+      <button type="button" id="bulk-run">Check selected</button>
+      <button type="button" id="bulk-pause">Pause selected</button>
+      <button type="button" id="bulk-resume">Resume selected</button>
+      <button type="button" id="bulk-delete">Delete selected</button>
+    </div>
     <p class="muted" id="searches-empty" style="display:none">No searches yet — add one above.</p>
   </div>
 
@@ -197,6 +206,8 @@ const pageTemplate = `<!doctype html>
   (function () {
     var INTERVAL = 15000;
     var expanded = {};
+    var groupExpanded = {};
+    var currentSearches = [];
     var sources = [{{range .Sources}}{id:"{{.ID}}",name:"{{.Name}}",images:{{.Images}}},{{end}}];
     function sourceName(id){ for (var i=0;i<sources.length;i++) if (sources[i].id===id) return sources[i].name; return id; }
 
@@ -254,53 +265,156 @@ const pageTemplate = `<!doctype html>
 
     function btn(label, fn) { var b=el('button',null,label); b.type='button'; b.onclick=fn; return b; }
 
+    var selectedSearches = {};
+
+    function paramSummary(se) {
+      var pk = se.params ? Object.keys(se.params).sort() : [];
+      var parts = pk.map(function(k){ return k+'='+se.params[k]; });
+      if (se.minPrice) parts.unshift('min='+se.minPrice);
+      if (se.maxPrice) parts.unshift('max='+se.maxPrice);
+      return parts.join(' · ');
+    }
+    function groupKey(se) {
+      return [se.query, se.interval, se.isImage ? '1' : '0', paramSummary(se)].join(' ');
+    }
+
+    function updateBulkBar() {
+      var ids = Object.keys(selectedSearches).filter(function(k){ return selectedSearches[k]; });
+      var bar = document.getElementById('bulk-bar');
+      bar.style.display = ids.length ? 'flex' : 'none';
+      document.getElementById('bulk-count').textContent = ids.length + ' selected';
+    }
+
+    function searchCheckbox(id) {
+      var cb = el('input'); cb.type='checkbox'; cb.checked = !!selectedSearches[id];
+      cb.onclick = function(e){ e.stopPropagation(); };
+      cb.onchange = function(){ selectedSearches[id] = cb.checked; updateBulkBar(); syncSelectAll(); };
+      return cb;
+    }
+
+    function detailRow(se, cols) {
+      var dr = el('tr'); var dc = el('td','detail'); dc.colSpan = cols;
+      var summary = paramSummary(se);
+      dc.textContent = summary ? summary : 'no extra filters';
+      dr.appendChild(dc);
+      return dr;
+    }
+
     function renderSearches(list) {
+      currentSearches = list;
       var tb = document.getElementById('searches');
       tb.replaceChildren();
       document.getElementById('searches-empty').style.display = list.length ? 'none' : '';
-      list.forEach(function (se) {
-        var tr = el('tr');
-        var exp = el('td');
-        var t = el('button','expander', expanded[se.id] ? '▾' : '▸'); t.type='button';
-        t.onclick = function(){ expanded[se.id] = !expanded[se.id]; renderSearches(list); };
-        exp.appendChild(t);
-        tr.appendChild(exp);
-        tr.appendChild(el('td', null, String(se.id)));
-        tr.appendChild(el('td', null, sourceName(se.source)));
-        var qcell = el('td', 'query');
-        if (se.isImage) { var ip = el('span','pill','image'); ip.style.marginRight='.3rem'; qcell.appendChild(ip); }
-        qcell.appendChild(document.createTextNode(se.query.length > 70 ? se.query.slice(0, 70) + '…' : se.query));
-        qcell.title = se.query;
-        tr.appendChild(qcell);
-        tr.appendChild(el('td', null, se.interval));
-        var st = el('td'); st.appendChild(el('span','pill', se.enabled ? 'enabled' : 'paused')); tr.appendChild(st);
-        tr.appendChild(el('td', 'muted', se.lastRun));
+      var present = {};
+      list.forEach(function(se){ present[se.id] = true; });
+      Object.keys(selectedSearches).forEach(function(k){ if (!present[k]) delete selectedSearches[k]; });
 
-        var act = el('td','actions');
-        act.appendChild(btn('run', function(){ action('/searches/'+se.id+'/run'); }));
-        act.appendChild(btn(se.enabled ? 'pause' : 'resume', function(){ action('/searches/'+se.id+'/toggle'); }));
-        act.appendChild(btn('edit', function(){ startEdit(se); }));
-        act.appendChild(btn('delete', function(){ if(confirm('Delete this search and its history?')) action('/searches/'+se.id+'/delete'); }));
-        tr.appendChild(act);
-        tb.appendChild(tr);
+      var groups = [], byKey = {};
+      list.forEach(function(se){
+        var k = groupKey(se);
+        if (!byKey[k]) { byKey[k] = {key:k, items:[]}; groups.push(byKey[k]); }
+        byKey[k].items.push(se);
+      });
 
-        if (expanded[se.id]) {
-          var dr = el('tr'); var dc = el('td','detail'); dc.colSpan = 8;
-          var bits = [];
-          if (se.minPrice) bits.push('min: ' + se.minPrice);
-          if (se.maxPrice) bits.push('max: ' + se.maxPrice);
-          var pk = se.params ? Object.keys(se.params) : [];
-          if (pk.length) bits.push('params:');
-          if (!bits.length) bits.push('no extra filters');
-          dc.appendChild(document.createTextNode(bits.join('  ·  ')));
-          if (pk.length) {
-            var pre = el('code'); pre.textContent = '\n' + pk.map(function(k){return '  '+k+'='+se.params[k];}).join('\n');
-            dc.appendChild(pre);
-          }
+      groups.forEach(function(g){
+        if (g.items.length === 1) { renderSearchRow(tb, g.items[0], false); return; }
+        renderGroupRow(tb, g);
+        if (groupExpanded[g.key]) {
+          var summary = paramSummary(g.items[0]);
+          var dr = el('tr'); var dc = el('td','detail'); dc.colSpan = 9;
+          dc.textContent = summary ? summary : 'no extra filters';
           dr.appendChild(dc); tb.appendChild(dr);
+          g.items.forEach(function(se){ renderSearchRow(tb, se, true); });
         }
       });
+      updateBulkBar(); syncSelectAll();
     }
+
+    function renderGroupRow(tb, g) {
+      var first = g.items[0];
+      var tr = el('tr'); tr.className = 'grouprow';
+      var cbCell = el('td');
+      var gcb = el('input'); gcb.type='checkbox';
+      gcb.checked = g.items.every(function(se){ return selectedSearches[se.id]; });
+      gcb.onclick = function(e){ e.stopPropagation(); };
+      gcb.onchange = function(){ g.items.forEach(function(se){ selectedSearches[se.id] = gcb.checked; }); renderSearches(currentSearches); };
+      cbCell.appendChild(gcb); tr.appendChild(cbCell);
+      var exp = el('td');
+      var t = el('button','expander', groupExpanded[g.key] ? '▾' : '▸'); t.type='button';
+      t.onclick = function(){ groupExpanded[g.key] = !groupExpanded[g.key]; renderSearches(currentSearches); };
+      exp.appendChild(t); tr.appendChild(exp);
+      tr.appendChild(el('td','muted', g.items.length + '×'));
+      tr.appendChild(el('td', null, g.items.map(function(se){ return sourceName(se.source); }).join(', ')));
+      var qcell = el('td', 'query');
+      if (first.isImage) { var ip = el('span','pill','image'); ip.style.marginRight='.3rem'; qcell.appendChild(ip); }
+      qcell.appendChild(document.createTextNode(first.query.length > 70 ? first.query.slice(0,70)+'…' : first.query));
+      if (paramSummary(first)) { var pf = el('span','pill','filters'); pf.style.marginLeft='.3rem'; pf.title = paramSummary(first); qcell.appendChild(pf); }
+      qcell.title = first.query; tr.appendChild(qcell);
+      tr.appendChild(el('td', null, first.interval));
+      var ids = g.items.map(function(se){ return se.id; });
+      var enabledCount = g.items.filter(function(se){ return se.enabled; }).length;
+      var st = el('td'); st.appendChild(el('span','pill', enabledCount+'/'+g.items.length+' on')); tr.appendChild(st);
+      tr.appendChild(el('td','muted', ''));
+      var act = el('td','actions');
+      act.appendChild(btn('check all', function(){ bulkRun(ids); }));
+      var allOn = enabledCount === g.items.length;
+      act.appendChild(btn(allOn ? 'pause all' : 'resume all', function(){ bulkEnable(ids, !allOn); }));
+      act.appendChild(btn('delete all', function(){
+        if (confirm('Delete all ' + g.items.length + ' searches for “' + first.query + '”?')) bulkDelete(ids);
+      }));
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    }
+
+    function renderSearchRow(tb, se, inGroup) {
+      var tr = el('tr');
+      if (inGroup) tr.className = 'childrow';
+      var cbCell = el('td'); cbCell.appendChild(searchCheckbox(se.id)); tr.appendChild(cbCell);
+      var exp = el('td');
+      if (!inGroup) {
+        var t = el('button','expander', expanded[se.id] ? '▾' : '▸'); t.type='button';
+        t.onclick = function(){ expanded[se.id] = !expanded[se.id]; renderSearches(currentSearches); };
+        exp.appendChild(t);
+      }
+      tr.appendChild(exp);
+      tr.appendChild(el('td', null, String(se.id)));
+      tr.appendChild(el('td', null, sourceName(se.source)));
+      var qcell = el('td', 'query');
+      if (se.isImage) { var ip = el('span','pill','image'); ip.style.marginRight='.3rem'; qcell.appendChild(ip); }
+      qcell.appendChild(document.createTextNode(se.query.length > 70 ? se.query.slice(0, 70) + '…' : se.query));
+      qcell.title = se.query; tr.appendChild(qcell);
+      tr.appendChild(el('td', null, se.interval));
+      var st = el('td'); st.appendChild(el('span','pill', se.enabled ? 'enabled' : 'paused')); tr.appendChild(st);
+      tr.appendChild(el('td', 'muted', se.lastRun));
+      var act = el('td','actions');
+      act.appendChild(btn('run', function(){ action('/searches/'+se.id+'/run'); }));
+      act.appendChild(btn(se.enabled ? 'pause' : 'resume', function(){ action('/searches/'+se.id+'/toggle'); }));
+      act.appendChild(btn('edit', function(){ startEdit(se); }));
+      act.appendChild(btn('delete', function(){
+        if(confirm('Delete search “' + se.query + '” (' + sourceName(se.source) + ') and its history?')) action('/searches/'+se.id+'/delete');
+      }));
+      tr.appendChild(act);
+      tb.appendChild(tr);
+
+      if (!inGroup && expanded[se.id]) { tb.appendChild(detailRow(se, 9)); }
+    }
+
+    function syncSelectAll() {
+      var all = document.getElementById('sel-all');
+      var ids = currentSearches.map(function(se){ return se.id; });
+      all.checked = ids.length > 0 && ids.every(function(id){ return selectedSearches[id]; });
+    }
+
+    function bulkPost(path, ids, extra, clearSel, failMsg) {
+      var f = new URLSearchParams();
+      ids.forEach(function(id){ f.append('id', id); });
+      if (extra) Object.keys(extra).forEach(function(k){ f.set(k, extra[k]); });
+      fetch(path, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
+        .then(function(r){ if (r.status===204 || r.ok){ if (clearSel) selectedSearches = {}; refresh(); } else { alert(failMsg); } });
+    }
+    function bulkDelete(ids) { bulkPost('/searches/delete', ids, null, true, 'Could not delete searches'); }
+    function bulkEnable(ids, enabled) { bulkPost('/searches/enable', ids, {enabled: enabled ? '1' : '0'}, false, 'Could not update searches'); }
+    function bulkRun(ids) { bulkPost('/searches/run', ids, null, false, 'Could not run searches'); }
 
     function sourceBoxes(){ return document.querySelectorAll('#f-sources input[name=source]'); }
     function setSources(ids){ sourceBoxes().forEach(function(b){ b.checked = ids.indexOf(b.value) >= 0; }); }
@@ -332,6 +446,21 @@ const pageTemplate = `<!doctype html>
       if (!any) { e.preventDefault(); alert('Select at least one source.'); }
     });
     document.getElementById('f-cancel').onclick = resetForm;
+
+    document.getElementById('sel-all').onchange = function(){
+      var checked = this.checked;
+      currentSearches.forEach(function(se){ selectedSearches[se.id] = checked; });
+      renderSearches(currentSearches);
+    };
+    function selectedIds(){ return Object.keys(selectedSearches).filter(function(k){ return selectedSearches[k]; }); }
+    document.getElementById('bulk-run').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkRun(ids); };
+    document.getElementById('bulk-pause').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkEnable(ids, false); };
+    document.getElementById('bulk-resume').onclick = function(){ var ids = selectedIds(); if (ids.length) bulkEnable(ids, true); };
+    document.getElementById('bulk-delete').onclick = function(){
+      var ids = selectedIds();
+      if (!ids.length) return;
+      if (confirm('Delete ' + ids.length + ' selected search(es) and their history?')) bulkDelete(ids);
+    };
 
     (function(){
       var head = document.getElementById('searches-head');
@@ -595,7 +724,7 @@ const pageTemplate = `<!doctype html>
           fetch('/monitors/'+m.id+'/update', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
             .then(function(r){ if (r.status===204 || r.ok) { refresh(); } else { alert('Invalid interval — use e.g. 30m, 1h, 6h'); } });
         }));
-        act.appendChild(btn('delete', function(){ if(confirm('Stop monitoring this item?')) action('/monitors/'+m.id+'/delete'); }));
+        act.appendChild(btn('delete', function(){ if(confirm('Stop monitoring “' + (m.title || m.url) + '”?')) action('/monitors/'+m.id+'/delete'); }));
         tr.appendChild(act); tb.appendChild(tr);
 
         if (monExpanded[m.id]) {

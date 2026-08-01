@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -352,6 +353,59 @@ func (s *Store) SetSearchEnabled(ctx context.Context, id int64, enabled bool) er
 func (s *Store) DeleteSearch(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM searches WHERE id = ?`, id)
 	return err
+}
+
+func (s *Store) DeleteSearches(ctx context.Context, userID int64, ids []int64) (int64, error) {
+	return s.bulkSearch(ctx, `DELETE FROM searches`, userID, ids)
+}
+
+func (s *Store) SetSearchesEnabled(ctx context.Context, userID int64, ids []int64, enabled bool) (int64, error) {
+	return s.bulkSearch(ctx, `UPDATE searches SET enabled = `+strconv.Itoa(boolToInt(enabled)), userID, ids)
+}
+
+func (s *Store) OwnedSearchIDs(ctx context.Context, userID int64, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders, args := bulkArgs(userID, ids)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM searches WHERE user_id = ? AND id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) bulkSearch(ctx context.Context, prefix string, userID int64, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	placeholders, args := bulkArgs(userID, ids)
+	res, err := s.db.ExecContext(ctx, prefix+` WHERE user_id = ? AND id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func bulkArgs(userID int64, ids []int64) (string, []any) {
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, userID)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	return strings.Join(placeholders, ","), args
 }
 
 func (s *Store) TouchSearchRun(ctx context.Context, id int64, at time.Time) error {

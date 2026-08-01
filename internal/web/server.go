@@ -114,6 +114,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /searches", b(http.HandlerFunc(s.handleCreate)))
 	mux.Handle("POST /searches/{id}/update", b(http.HandlerFunc(s.handleUpdate)))
 	mux.Handle("POST /searches/{id}/delete", b(http.HandlerFunc(s.handleDelete)))
+	mux.Handle("POST /searches/delete", b(http.HandlerFunc(s.handleBulkDelete)))
+	mux.Handle("POST /searches/enable", b(http.HandlerFunc(s.handleBulkEnable)))
+	mux.Handle("POST /searches/run", b(http.HandlerFunc(s.handleBulkRun)))
 	mux.Handle("POST /searches/{id}/toggle", b(http.HandlerFunc(s.handleToggle)))
 	mux.Handle("POST /searches/{id}/run", b(http.HandlerFunc(s.handleRun)))
 	mux.Handle("POST /image_search", b(http.HandlerFunc(s.handleImageSearch)))
@@ -670,6 +673,80 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteSearch(r.Context(), id); err != nil {
 		s.fail(w, "delete search", err)
 		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleBulkDelete(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, errBadForm.Error(), http.StatusBadRequest)
+		return
+	}
+	var ids []int64
+	for _, v := range r.Form["id"] {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		http.Error(w, "no search ids provided", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.store.DeleteSearches(r.Context(), auth.UserID(r.Context()), ids); err != nil {
+		s.fail(w, "bulk delete searches", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func bulkSearchIDs(r *http.Request) ([]int64, error) {
+	if err := r.ParseForm(); err != nil {
+		return nil, errBadForm
+	}
+	var ids []int64
+	for _, v := range r.Form["id"] {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func (s *Server) handleBulkEnable(w http.ResponseWriter, r *http.Request) {
+	ids, err := bulkSearchIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(ids) == 0 {
+		http.Error(w, "no search ids provided", http.StatusBadRequest)
+		return
+	}
+	enabled := r.FormValue("enabled") == "1"
+	if _, err := s.store.SetSearchesEnabled(r.Context(), auth.UserID(r.Context()), ids, enabled); err != nil {
+		s.fail(w, "bulk toggle searches", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleBulkRun(w http.ResponseWriter, r *http.Request) {
+	ids, err := bulkSearchIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(ids) == 0 {
+		http.Error(w, "no search ids provided", http.StatusBadRequest)
+		return
+	}
+	owned, err := s.store.OwnedSearchIDs(r.Context(), auth.UserID(r.Context()), ids)
+	if err != nil {
+		s.fail(w, "bulk run searches", err)
+		return
+	}
+	for _, id := range owned {
+		s.sched.RunNow(id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
