@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/Swarsel/shopservatory/internal/source"
 )
 
 type Settings struct {
@@ -70,4 +72,69 @@ func (s *Store) SetTelegramChatID(ctx context.Context, userID int64, chatID stri
 		Config: map[string]string{"chat_id": chatID}, Enabled: true,
 	})
 	return err
+}
+
+type SourceExclusion struct {
+	Source            string
+	Exclude           string
+	ExcludeCategories string
+}
+
+func (s *Store) SourceExclusions(ctx context.Context, userID int64) (map[string]SourceExclusion, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT source, exclude, exclude_categories FROM source_exclusions WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]SourceExclusion{}
+	for rows.Next() {
+		var e SourceExclusion
+		if err := rows.Scan(&e.Source, &e.Exclude, &e.ExcludeCategories); err != nil {
+			return nil, err
+		}
+		out[e.Source] = e
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetSourceExclusion(ctx context.Context, userID int64, e SourceExclusion) error {
+	if strings.TrimSpace(e.Exclude) == "" && strings.TrimSpace(e.ExcludeCategories) == "" {
+		_, err := s.db.ExecContext(ctx,
+			`DELETE FROM source_exclusions WHERE user_id = ? AND source = ?`, userID, e.Source)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO source_exclusions (user_id, source, exclude, exclude_categories)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(user_id, source) DO UPDATE SET exclude = excluded.exclude,
+		                                            exclude_categories = excluded.exclude_categories`,
+		userID, e.Source, strings.TrimSpace(e.Exclude), strings.TrimSpace(e.ExcludeCategories))
+	return err
+}
+
+func mergeLists(a, b string) string {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + ", " + b
+	}
+}
+
+func (s *Store) EffectiveSpec(ctx context.Context, se Search) source.SearchSpec {
+	spec := se.Spec()
+	var e SourceExclusion
+	err := s.db.QueryRowContext(ctx,
+		`SELECT exclude, exclude_categories FROM source_exclusions WHERE user_id = ? AND source = ?`,
+		se.UserID, se.Source).Scan(&e.Exclude, &e.ExcludeCategories)
+	if err != nil {
+		return spec
+	}
+	spec.Exclude = mergeLists(e.Exclude, spec.Exclude)
+	spec.ExcludeCategories = mergeLists(e.ExcludeCategories, spec.ExcludeCategories)
+	return spec
 }

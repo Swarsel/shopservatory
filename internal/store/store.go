@@ -121,6 +121,14 @@ CREATE TABLE IF NOT EXISTS monitor_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_monitor_prices ON monitor_prices(monitor_id, observed_at);
 
+CREATE TABLE IF NOT EXISTS source_exclusions (
+    user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source             TEXT NOT NULL,
+    exclude            TEXT NOT NULL DEFAULT '',
+    exclude_categories TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, source)
+);
+
 CREATE TABLE IF NOT EXISTS notification_targets (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -159,6 +167,12 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 		return err
 	}
 	if err := s.addColumnIfMissing(ctx, "monitored_items", "archived", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "searches", "exclude", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "searches", "exclude_categories", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
@@ -266,7 +280,7 @@ func (s *Store) UserFromIdentity(ctx context.Context, subject, email, name strin
 func (s *Store) ListSearchesForUser(ctx context.Context, userID int64) ([]Search, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, user_id, source, query, params, min_price, max_price,
-		        interval_seconds, enabled, created_at, last_run_at, image
+		        interval_seconds, enabled, created_at, last_run_at, image, exclude, exclude_categories
 		 FROM searches WHERE user_id = ? ORDER BY id`, userID)
 	if err != nil {
 		return nil, err
@@ -285,7 +299,7 @@ func (s *Store) ListSearchesForUser(ctx context.Context, userID int64) ([]Search
 
 func (s *Store) ListSearches(ctx context.Context, enabledOnly bool) ([]Search, error) {
 	q := `SELECT id, user_id, source, query, params, min_price, max_price,
-	             interval_seconds, enabled, created_at, last_run_at, image
+	             interval_seconds, enabled, created_at, last_run_at, image, exclude, exclude_categories
 	      FROM searches`
 	if enabledOnly {
 		q += ` WHERE enabled = 1`
@@ -311,7 +325,7 @@ func (s *Store) ListSearches(ctx context.Context, enabledOnly bool) ([]Search, e
 func (s *Store) GetSearch(ctx context.Context, id int64) (Search, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, user_id, source, query, params, min_price, max_price,
-		        interval_seconds, enabled, created_at, last_run_at, image
+		        interval_seconds, enabled, created_at, last_run_at, image, exclude, exclude_categories
 		 FROM searches WHERE id = ?`, id)
 	return scanSearch(row)
 }
@@ -324,11 +338,12 @@ func (s *Store) CreateSearch(ctx context.Context, se Search) (int64, error) {
 	interval := int64(se.Interval / time.Second)
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO searches (user_id, source, query, params, min_price, max_price,
-		                       interval_seconds, enabled, created_at, image)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       interval_seconds, enabled, created_at, image, exclude, exclude_categories)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		se.UserID, se.Source, se.Query, string(params),
 		nullFloat(se.MinPrice), nullFloat(se.MaxPrice),
-		interval, boolToInt(se.Enabled), time.Now().Unix(), se.Image)
+		interval, boolToInt(se.Enabled), time.Now().Unix(), se.Image,
+		se.Exclude, se.ExcludeCategories)
 	if err != nil {
 		return 0, err
 	}
@@ -342,10 +357,11 @@ func (s *Store) UpdateSearch(ctx context.Context, se Search) error {
 	}
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE searches SET source = ?, query = ?, params = ?, min_price = ?, max_price = ?,
-		        interval_seconds = ?, enabled = ?
+		        interval_seconds = ?, enabled = ?, exclude = ?, exclude_categories = ?
 		 WHERE id = ?`,
 		se.Source, se.Query, string(params), nullFloat(se.MinPrice), nullFloat(se.MaxPrice),
-		int64(se.Interval/time.Second), boolToInt(se.Enabled), se.ID)
+		int64(se.Interval/time.Second), boolToInt(se.Enabled),
+		se.Exclude, se.ExcludeCategories, se.ID)
 	return err
 }
 
@@ -466,6 +482,11 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 	     GROUP BY l2.source, l2.external_id
 	   )`
 	args := []any{userID, userID}
+
+	for _, term := range s.excludedFeedTerms(ctx, userID) {
+		where += ` AND l.title NOT LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(term)+"%")
+	}
 	if filter != "" {
 		clause := `(l.title LIKE ? ESCAPE '\'`
 		args = append(args, "%"+escapeLike(filter)+"%")
@@ -496,6 +517,38 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 	defer rows.Close()
 	listings, err := scanListings(rows)
 	return listings, total, err
+}
+
+func (s *Store) excludedFeedTerms(ctx context.Context, userID int64) []string {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT exclude FROM source_exclusions WHERE user_id = ? AND exclude != ''
+		 UNION
+		 SELECT exclude FROM searches WHERE user_id = ? AND exclude != ''`, userID, userID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	seen := map[string]bool{}
+	var out []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return out
+		}
+		for _, f := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' }) {
+			t := strings.TrimSpace(f)
+			if t == "" || seen[strings.ToLower(t)] {
+				continue
+			}
+			seen[strings.ToLower(t)] = true
+			out = append(out, t)
+			if len(out) >= 40 {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func escapeLike(s string) string {
@@ -553,7 +606,7 @@ func scanSearch(sc scanner) (Search, error) {
 		lastRun  sql.NullInt64
 	)
 	if err := sc.Scan(&se.ID, &se.UserID, &se.Source, &se.Query, &params,
-		&minP, &maxP, &interval, asBool(&se.Enabled), asTime(&se.CreatedAt), &lastRun, &se.Image); err != nil {
+		&minP, &maxP, &interval, asBool(&se.Enabled), asTime(&se.CreatedAt), &lastRun, &se.Image, &se.Exclude, &se.ExcludeCategories); err != nil {
 		return Search{}, err
 	}
 	se.Params = decodeMap(params)

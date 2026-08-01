@@ -29,14 +29,19 @@ type Search struct {
 	CreatedAt time.Time
 	LastRunAt *time.Time
 	Image     []byte
+
+	Exclude           string
+	ExcludeCategories string
 }
 
 func (s Search) Spec() source.SearchSpec {
 	return source.SearchSpec{
-		Query:    s.Query,
-		MinPrice: s.MinPrice,
-		MaxPrice: s.MaxPrice,
-		Params:   s.Params,
+		Query:             s.Query,
+		MinPrice:          s.MinPrice,
+		MaxPrice:          s.MaxPrice,
+		Params:            s.Params,
+		Exclude:           s.Exclude,
+		ExcludeCategories: s.ExcludeCategories,
 	}
 }
 

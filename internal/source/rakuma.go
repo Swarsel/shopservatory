@@ -3,7 +3,9 @@ package source
 import (
 	"context"
 	"fmt"
+	"html"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -47,6 +49,16 @@ func (r *rakuma) Search(ctx context.Context, spec SearchSpec) ([]Listing, error)
 		}
 		img := sel.Find(".item-box__image-wrapper img").First()
 		image := firstNonEmpty(img.AttrOr("data-original", ""), img.AttrOr("src", ""))
+		category := rakumaCardCategory(sel)
+		if category != "" && specExcludesCategory(spec, category) {
+			return
+		}
+		extra := map[string]string{
+			"brand": collapseSpaces(sel.Find(".item-box__item-sub-name").First().Text()),
+		}
+		if category != "" {
+			extra["category"] = category
+		}
 		listings = append(listings, Listing{
 			ExternalID: lastPathSegment(href),
 			Title:      collapseSpaces(link.Text()),
@@ -54,12 +66,23 @@ func (r *rakuma) Search(ctx context.Context, spec SearchSpec) ([]Listing, error)
 			Currency:   "JPY",
 			URL:        absoluteURL("https://item.fril.jp", href),
 			ImageURL:   image,
-			Extra: map[string]string{
-				"brand": collapseSpaces(sel.Find(".item-box__item-sub-name").First().Text()),
-			},
+			Extra:      extra,
 		})
 	})
-	return listings, nil
+	return FilterExcluded(spec, listings), nil
+}
+
+var rakumaCategoryID = regexp.MustCompile(`"category_id":"(\d+)"`)
+
+func rakumaCardCategory(sel *goquery.Selection) string {
+	h, err := goquery.OuterHtml(sel)
+	if err != nil {
+		return ""
+	}
+	if m := rakumaCategoryID.FindStringSubmatch(html.UnescapeString(h)); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 func (r *rakuma) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {

@@ -340,6 +340,7 @@ func (s *Scheduler) poll(ctx context.Context, se store.Search) {
 	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
+	spec := s.store.EffectiveSpec(ctx, se)
 	var listings []source.Listing
 	var err error
 	if len(se.Image) > 0 {
@@ -348,13 +349,19 @@ func (s *Scheduler) poll(ctx context.Context, se store.Search) {
 			s.log.Warn("scheduler: source does not support image search, skipping", "source", se.Source, "search", se.ID)
 			return
 		}
-		listings, err = searcher.SearchByImage(pollCtx, se.Image, se.Spec())
+		listings, err = searcher.SearchByImage(pollCtx, se.Image, spec)
 	} else {
-		listings, err = src.Search(pollCtx, se.Spec())
+		listings, err = src.Search(pollCtx, spec)
 	}
 	if err != nil {
 		s.log.Warn("scheduler: search failed", "source", se.Source, "search", se.ID, "err", err)
 		return
+	}
+	if before := len(listings); before > 0 {
+		listings = source.FilterExcluded(spec, listings)
+		if dropped := before - len(listings); dropped > 0 {
+			s.log.Debug("scheduler: excluded by keyword", "search", se.ID, "dropped", dropped)
+		}
 	}
 
 	var targets []store.NotificationTarget

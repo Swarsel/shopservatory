@@ -25,6 +25,8 @@ const pageTemplate = `<!doctype html>
   label { display: block; margin: .4rem 0 .1rem; font-size: .85rem; }
   input, select, textarea { width: 100%; padding: .35rem; box-sizing: border-box; }
   .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: .6rem; }
+  .row3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 640px) { .row, .row3 { grid-template-columns: 1fr; } }
   .logout { position: absolute; top: 1.2rem; right: 1.2rem; margin: 0; }
   .feedbar { display: flex; gap: .5rem; align-items: center; margin: .3rem 0 .9rem; }
   .feedbar input { max-width: 320px; }
@@ -63,13 +65,24 @@ const pageTemplate = `<!doctype html>
           {{range .Sources}}<label class="srcbox"><input type="checkbox" name="source" value="{{.ID}}"> {{.Name}}</label>{{end}}
         </div>
       </div>
-      <div>
-        <label>Query</label>
-        <input name="query" id="f-query" placeholder="keyword, or a browse URL (snkrdunk/suruga-ya)" required>
-      </div>
       <div class="row">
+        <div>
+          <label>Query</label>
+          <input name="query" id="f-query" placeholder="keyword, or a browse URL (snkrdunk/suruga-ya)" required>
+        </div>
+        <div>
+          <label>Exclude <span class="muted">(comma-separated, matched in the title)</span></label>
+          <input name="exclude" id="f-exclude" placeholder="ONE PIECE, reprint">
+        </div>
+      </div>
+      <div class="row row3">
         <div><label>Min price</label><input name="min_price" id="f-min" type="number" step="any" placeholder="optional"></div>
         <div><label>Max price</label><input name="max_price" id="f-max" type="number" step="any" placeholder="optional"></div>
+        <div>
+          <label>Exclude categories <span class="muted">(where supported)</span></label>
+          <input name="exclude_categories" id="f-excat" placeholder="optional — category ids"
+                 title="Comma-separated category ids. Mercari: a parent id also excludes its children (3088 = ファッション/Fashion). Rakuma: exact ids only; a find's id is shown on its card. Other sources do not expose categories.">
+        </div>
       </div>
       <div class="row">
         <div><label>Interval</label><input name="interval" id="f-interval" placeholder="default (e.g. 5m, 1h)"></div>
@@ -158,6 +171,14 @@ const pageTemplate = `<!doctype html>
         <span class="muted" id="settings-status" style="font-size:.8rem"></span>
       </div>
     </form>
+    <h3>Per-source exclusions</h3>
+    <p class="muted">Applied to every search on that source, on top of the search's own exclusions.
+      Category ids are supported for Mercari (parents include their children, e.g. 3088 = ファッション)
+      and Rakuma (exact leaf ids only — a find's id is shown on its card).</p>
+    <table>
+      <thead><tr><th>Source</th><th>Exclude keywords</th><th>Exclude category ids</th><th></th></tr></thead>
+      <tbody id="srcex"></tbody>
+    </table>
     <h3>Change password</h3>
     <form id="password-form">
       <div class="row">
@@ -279,6 +300,8 @@ const pageTemplate = `<!doctype html>
       var parts = pk.map(function(k){ return k+'='+se.params[k]; });
       if (se.minPrice) parts.unshift('min='+se.minPrice);
       if (se.maxPrice) parts.unshift('max='+se.maxPrice);
+      if (se.exclude) parts.push('exclude='+se.exclude);
+      if (se.excludeCategories) parts.push('excat='+se.excludeCategories);
       return parts.join(' · ');
     }
     function groupKey(se) {
@@ -431,6 +454,8 @@ const pageTemplate = `<!doctype html>
       setSources([se.source]);
       document.getElementById('f-sources-hint').textContent = '(editing one search)';
       document.getElementById('f-query').value = se.query;
+      document.getElementById('f-exclude').value = se.exclude || '';
+      document.getElementById('f-excat').value = se.excludeCategories || '';
       document.getElementById('f-min').value = se.minPrice || '';
       document.getElementById('f-max').value = se.maxPrice || '';
       document.getElementById('f-interval').value = se.interval;
@@ -578,6 +603,48 @@ const pageTemplate = `<!doctype html>
       document.getElementById('s-search').value = st.searchInterval || '';
       document.getElementById('s-monitor').value = st.monitorInterval || '';
       document.getElementById('s-telegram').value = st.telegramChatId || '';
+      renderSourceExclusions(st.sourceExclude || {});
+    }
+
+    var srcExDirty = {};
+    function renderSourceExclusions(byId){
+      var tb = document.getElementById('srcex');
+      if (Object.keys(srcExDirty).length) return;
+      tb.replaceChildren();
+      sources.forEach(function(src){
+        var cur = byId[src.id] || {};
+        var tr = el('tr');
+        tr.appendChild(el('td', null, src.name));
+        var kwCell = el('td');
+        var kw = el('input'); kw.value = cur.exclude || ''; kw.placeholder = 'ONE PIECE, reprint';
+        kw.oninput = function(){ srcExDirty[src.id] = true; };
+        kwCell.appendChild(kw); tr.appendChild(kwCell);
+        var catCell = el('td');
+        var cat = el('input');
+        cat.value = cur.excludeCategories || '';
+        if (src.id === 'mercari' || src.id === 'rakuma') {
+          cat.placeholder = src.id === 'mercari' ? '3088' : '527';
+        } else {
+          cat.placeholder = 'not supported';
+          cat.disabled = true;
+        }
+        cat.oninput = function(){ srcExDirty[src.id] = true; };
+        catCell.appendChild(cat); tr.appendChild(catCell);
+        var act = el('td','actions');
+        act.appendChild(btn('save', function(){
+          var f = new URLSearchParams();
+          f.set('source', src.id);
+          f.set('exclude', kw.value.trim());
+          f.set('exclude_categories', cat.disabled ? '' : cat.value.trim());
+          fetch('/settings/source', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
+            .then(function(r){
+              if (r.status===204 || r.ok) { delete srcExDirty[src.id]; refresh(); }
+              else { alert('Could not save exclusions for ' + src.name); }
+            });
+        }));
+        tr.appendChild(act);
+        tb.appendChild(tr);
+      });
     }
     document.getElementById('settings-form').addEventListener('submit', function(e){
       e.preventDefault();
@@ -805,7 +872,8 @@ const pageTemplate = `<!doctype html>
       var price = el('div','muted'); price.textContent = item.price || '';
       if (item.priceApprox) { var ap=el('span','approx','  '+item.priceApprox); price.appendChild(ap); }
       body.appendChild(price);
-      var label = sourceName(item.source) + (item.searchId ? ' #' + item.searchId : '');
+      var label = sourceName(item.source) + (item.searchId ? ' #' + item.searchId : '') +
+        (item.category ? ' · cat ' + item.category : '');
       body.appendChild(el('div','muted', label + ' · ' + item.seen));
       var mon = el('button','cardbtn','monitor'); mon.type='button';
       mon.onclick = function(){ monitorItem(item, mon); };

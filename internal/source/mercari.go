@@ -17,8 +17,9 @@ import (
 )
 
 type mercari struct {
-	client    *Client
-	searchURL string
+	client     *Client
+	searchURL  string
+	categories mercariCategoryTree
 }
 
 func newMercari(client *Client) *mercari {
@@ -102,11 +103,23 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("mercari: decode: %w", err)
 	}
-	return mercariListings(out.Items), nil
+	return m.postFilter(ctx, spec, out.Items), nil
+}
+
+func (m *mercari) postFilter(ctx context.Context, spec SearchSpec, items []mercariSearchItem) []Listing {
+	kept := items[:0:0]
+	for _, it := range items {
+		if m.categoryExcluded(ctx, spec, it.CategoryID) {
+			continue
+		}
+		kept = append(kept, it)
+	}
+	return FilterExcluded(spec, mercariListings(kept))
 }
 
 type mercariSearchItem struct {
 	ID         string      `json:"id"`
+	CategoryID string      `json:"categoryId"`
 	Name       string      `json:"name"`
 	Price      string      `json:"price"`
 	IsNoPrice  bool        `json:"isNoPrice"`
@@ -224,7 +237,7 @@ func (m *mercari) SearchByImage(ctx context.Context, image []byte, spec SearchSp
 			}
 		}
 	}
-	listings := mercariListings(items)
+	listings := m.postFilter(ctx, spec, items)
 	filtered := listings[:0:0]
 	for _, l := range listings {
 		if withinPriceBounds(spec, l.Price) {

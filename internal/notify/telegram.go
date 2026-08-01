@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Swarsel/shopservatory/internal/source"
 	"github.com/Swarsel/shopservatory/internal/store"
 )
 
@@ -73,6 +74,9 @@ func (t *Telegram) format(ev Event) string {
 	}
 	if left := auctionTimeLeft(ev.Listing.Extra["ends"], time.Now()); left != "" {
 		fmt.Fprintf(&b, "⏳ %s\n", html.EscapeString(left))
+	}
+	if dz := source.DoorzoURL(ev.Listing.Source, ev.Listing.URL, ev.Listing.ExternalID); dz != "" {
+		fmt.Fprintf(&b, "🛫 <a href=\"%s\">buy via Doorzo</a>\n", html.EscapeString(dz))
 	}
 	if ev.Note != "" {
 		fmt.Fprintf(&b, "%s", html.EscapeString(ev.Note))

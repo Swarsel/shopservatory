@@ -232,3 +232,138 @@ func TestMonitorPauseAndArchive(t *testing.T) {
 		t.Fatalf("price history must survive archiving, got %d points", len(hist))
 	}
 }
+
+func TestExcludeFieldsRoundTrip(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-ex", "ex@example.com", "Ex")
+
+	id, err := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "murakami", Interval: time.Minute, Enabled: true,
+		Exclude: "ONE PIECE, reprint", ExcludeCategories: "3088",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	se, err := st.GetSearch(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if se.Exclude != "ONE PIECE, reprint" || se.ExcludeCategories != "3088" {
+		t.Fatalf("round-trip failed: %q / %q", se.Exclude, se.ExcludeCategories)
+	}
+	if spec := se.Spec(); spec.Exclude != se.Exclude || spec.ExcludeCategories != se.ExcludeCategories {
+		t.Fatal("Spec() must carry the exclusions to the sources")
+	}
+
+	se.Exclude = "only this"
+	se.ExcludeCategories = ""
+	if err := st.UpdateSearch(ctx, se); err != nil {
+		t.Fatal(err)
+	}
+	se2, _ := st.GetSearch(ctx, id)
+	if se2.Exclude != "only this" || se2.ExcludeCategories != "" {
+		t.Fatalf("update failed: %q / %q", se2.Exclude, se2.ExcludeCategories)
+	}
+}
+
+func TestSourceExclusionsMergeIntoSpec(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-gx", "gx@example.com", "Gx")
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "mercari", Exclude: "ONE PIECE", ExcludeCategories: "3088",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "murakami", Interval: time.Minute, Enabled: true,
+		Exclude: "reprint", ExcludeCategories: "1328",
+	})
+	se, _ := st.GetSearch(ctx, id)
+	spec := st.EffectiveSpec(ctx, se)
+
+	terms := spec.ExcludeTerms()
+	if len(terms) != 2 || terms[0] != "one piece" || terms[1] != "reprint" {
+		t.Fatalf("expected global then per-search terms, got %v", terms)
+	}
+	cats := spec.ExcludedCategoryIDs()
+	if len(cats) != 2 || cats[0] != "3088" || cats[1] != "1328" {
+		t.Fatalf("expected merged categories, got %v", cats)
+	}
+
+	other, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "ebay", Query: "x", Interval: time.Minute, Enabled: true,
+	})
+	oseSpec := st.EffectiveSpec(ctx, mustGet(t, st, other))
+	if len(oseSpec.ExcludeTerms()) != 0 {
+		t.Fatalf("mercari exclusions must not leak to ebay, got %v", oseSpec.ExcludeTerms())
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{Source: "mercari"}); err != nil {
+		t.Fatal(err)
+	}
+	spec2 := st.EffectiveSpec(ctx, se)
+	if len(spec2.ExcludeTerms()) != 1 || spec2.ExcludeTerms()[0] != "reprint" {
+		t.Fatalf("clearing the global rule should leave only the search's own, got %v", spec2.ExcludeTerms())
+	}
+}
+
+func mustGet(t *testing.T, st *Store, id int64) Search {
+	t.Helper()
+	se, err := st.GetSearch(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return se
+}
+
+func TestFeedHidesExcludedListings(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-fh", "fh@example.com", "Fh")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "murakami", Interval: time.Minute, Enabled: true,
+	})
+
+	titles := []string{
+		"Murakami flower plush",
+		"ONE PIECE Luffy figure",
+		"one piece lowercase variant",
+		"村上隆 ファッション scarf",
+	}
+	for i, ti := range titles {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari",
+			source.Listing{ExternalID: string(rune('a' + i)), Title: ti}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 100, 0); total != 4 {
+		t.Fatalf("baseline expected 4 listings, got %d", total)
+	}
+
+	se, _ := st.GetSearch(ctx, sid)
+	se.Exclude = "ONE PIECE"
+	if err := st.UpdateSearch(ctx, se); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 100, 0); total != 2 {
+		t.Fatalf("a per-search term must hide both case variants, got %d", total)
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "mercari", Exclude: "ファッション",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 100, 0)
+	if total != 1 || got[0].Title != "Murakami flower plush" {
+		t.Fatalf("a global term must also hide, got %d: %+v", total, got)
+	}
+
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "plush", nil, 100, 0); total != 1 {
+		t.Fatalf("hiding must compose with the text filter, got %d", total)
+	}
+}

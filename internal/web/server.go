@@ -128,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /monitors/{id}/toggle", b(http.HandlerFunc(s.handleToggleMonitor)))
 	mux.Handle("POST /monitors/{id}/archive", b(http.HandlerFunc(s.handleArchiveMonitor)))
 	mux.Handle("POST /settings", b(http.HandlerFunc(s.handleSettings)))
+	mux.Handle("POST /settings/source", b(http.HandlerFunc(s.handleSourceExclusions)))
 	mux.Handle("POST /password", b(http.HandlerFunc(s.handlePassword)))
 	mux.Handle("POST /admin/users", b(s.requireAdmin(http.HandlerFunc(s.handleAdminCreateUser))))
 	mux.Handle("POST /admin/users/{id}/update", b(s.requireAdmin(http.HandlerFunc(s.handleAdminUpdateUser))))
@@ -303,16 +304,18 @@ type sourceOption struct {
 }
 
 type searchView struct {
-	ID       int64             `json:"id"`
-	Source   string            `json:"source"`
-	Query    string            `json:"query"`
-	Interval string            `json:"interval"`
-	Enabled  bool              `json:"enabled"`
-	LastRun  string            `json:"lastRun"`
-	MinPrice string            `json:"minPrice"`
-	MaxPrice string            `json:"maxPrice"`
-	Params   map[string]string `json:"params"`
-	IsImage  bool              `json:"isImage"`
+	ID                int64             `json:"id"`
+	Source            string            `json:"source"`
+	Query             string            `json:"query"`
+	Interval          string            `json:"interval"`
+	Enabled           bool              `json:"enabled"`
+	LastRun           string            `json:"lastRun"`
+	MinPrice          string            `json:"minPrice"`
+	MaxPrice          string            `json:"maxPrice"`
+	Params            map[string]string `json:"params"`
+	Exclude           string            `json:"exclude"`
+	ExcludeCategories string            `json:"excludeCategories"`
+	IsImage           bool              `json:"isImage"`
 }
 
 type listingView struct {
@@ -328,6 +331,7 @@ type listingView struct {
 	ImageURL    string  `json:"imageUrl"`
 	SaleType    string  `json:"saleType"`
 	Ends        string  `json:"ends,omitempty"`
+	Category    string  `json:"category,omitempty"`
 	Seen        string  `json:"seen"`
 }
 
@@ -428,6 +432,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			SearchInterval:  durStr(settings.SearchInterval),
 			MonitorInterval: durStr(settings.MonitorInterval),
 			TelegramChatID:  settings.TelegramChatID,
+			SourceExclude:   s.sourceExclusionViews(r.Context(), userID),
 		}}
 	if err := json.NewEncoder(w).Encode(out); err != nil {
 		s.log.Error("web: encode state", "err", err)
@@ -435,10 +440,51 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 type settingsView struct {
-	Currency        string `json:"currency"`
-	SearchInterval  string `json:"searchInterval"`
-	MonitorInterval string `json:"monitorInterval"`
-	TelegramChatID  string `json:"telegramChatId"`
+	Currency        string                   `json:"currency"`
+	SearchInterval  string                   `json:"searchInterval"`
+	MonitorInterval string                   `json:"monitorInterval"`
+	TelegramChatID  string                   `json:"telegramChatId"`
+	SourceExclude   map[string]exclusionView `json:"sourceExclude"`
+}
+
+type exclusionView struct {
+	Exclude           string `json:"exclude"`
+	ExcludeCategories string `json:"excludeCategories"`
+}
+
+func (s *Server) sourceExclusionViews(ctx context.Context, userID int64) map[string]exclusionView {
+	out := map[string]exclusionView{}
+	byID, err := s.store.SourceExclusions(ctx, userID)
+	if err != nil {
+		s.log.Error("web: source exclusions", "err", err)
+		return out
+	}
+	for id, e := range byID {
+		out[id] = exclusionView{Exclude: e.Exclude, ExcludeCategories: e.ExcludeCategories}
+	}
+	return out
+}
+
+func (s *Server) handleSourceExclusions(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, errBadForm.Error(), http.StatusBadRequest)
+		return
+	}
+	srcID := r.FormValue("source")
+	if _, ok := s.registry.Get(srcID); !ok {
+		http.Error(w, "unknown source", http.StatusBadRequest)
+		return
+	}
+	err := s.store.SetSourceExclusion(r.Context(), auth.UserID(r.Context()), store.SourceExclusion{
+		Source:            srcID,
+		Exclude:           r.FormValue("exclude"),
+		ExcludeCategories: r.FormValue("exclude_categories"),
+	})
+	if err != nil {
+		s.fail(w, "save source exclusions", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func durStr(d time.Duration) string {
@@ -574,7 +620,8 @@ func (s *Server) searchViews(ctx context.Context, userID int64) ([]searchView, e
 			ID: se.ID, Source: se.Source, Query: se.Query,
 			Interval: se.Interval.String(), Enabled: se.Enabled, LastRun: lr,
 			MinPrice: floatStr(se.MinPrice), MaxPrice: floatStr(se.MaxPrice),
-			Params: orEmptyMap(se.Params), IsImage: len(se.Image) > 0,
+			Params:  orEmptyMap(se.Params),
+			Exclude: se.Exclude, ExcludeCategories: se.ExcludeCategories, IsImage: len(se.Image) > 0,
 		})
 	}
 	return out, nil
@@ -592,6 +639,7 @@ func (s *Server) listingViews(listings []store.Listing, target string) []listing
 			Source: l.Source, SearchID: l.SearchID, ExternalID: l.ExternalID,
 			Title: l.Title, URL: l.URL, ImageURL: l.ImageURL, SaleType: l.SaleType,
 			Ends:        l.Extra["ends"],
+			Category:    l.Extra["category"],
 			Price:       priceString(l.Price, l.Currency),
 			PriceValue:  l.Price,
 			Currency:    l.Currency,
@@ -889,13 +937,15 @@ func (s *Server) parseCommonForm(r *http.Request) (store.Search, error) {
 		}
 	}
 	return store.Search{
-		UserID:   auth.UserID(r.Context()),
-		Query:    query,
-		Params:   parseParams(r.FormValue("params")),
-		MinPrice: parsePrice(r.FormValue("min_price")),
-		MaxPrice: parsePrice(r.FormValue("max_price")),
-		Interval: interval,
-		Enabled:  true,
+		UserID:            auth.UserID(r.Context()),
+		Query:             query,
+		Params:            parseParams(r.FormValue("params")),
+		MinPrice:          parsePrice(r.FormValue("min_price")),
+		MaxPrice:          parsePrice(r.FormValue("max_price")),
+		Interval:          interval,
+		Enabled:           true,
+		Exclude:           strings.TrimSpace(r.FormValue("exclude")),
+		ExcludeCategories: strings.TrimSpace(r.FormValue("exclude_categories")),
 	}, nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Swarsel/shopservatory/internal/browser"
@@ -21,6 +22,72 @@ type SearchSpec struct {
 	MaxPrice *float64
 
 	Params map[string]string
+
+	Exclude           string
+	ExcludeCategories string
+}
+
+func (s SearchSpec) ExcludeTerms() []string {
+	fields := strings.FieldsFunc(s.Exclude, func(r rune) bool { return r == ',' || r == '\n' })
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if t := strings.ToLower(strings.TrimSpace(f)); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (s SearchSpec) TitleExcluded(title string) bool {
+	terms := s.ExcludeTerms()
+	if len(terms) == 0 {
+		return false
+	}
+	lower := strings.ToLower(title)
+	for _, t := range terms {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s SearchSpec) ExcludedCategoryIDs() []string {
+	fields := strings.FieldsFunc(s.ExcludeCategories, func(r rune) bool {
+		return r == ',' || r == '\n' || r == ' '
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if t := strings.TrimSpace(f); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func specExcludesCategory(spec SearchSpec, categoryID string) bool {
+	if categoryID == "" {
+		return false
+	}
+	for _, want := range spec.ExcludedCategoryIDs() {
+		if want == categoryID {
+			return true
+		}
+	}
+	return false
+}
+
+func FilterExcluded(spec SearchSpec, listings []Listing) []Listing {
+	if len(spec.ExcludeTerms()) == 0 {
+		return listings
+	}
+	out := listings[:0:0]
+	for _, l := range listings {
+		if !spec.TitleExcluded(l.Title) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (s SearchSpec) Param(key string) string {
