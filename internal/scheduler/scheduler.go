@@ -340,7 +340,18 @@ func (s *Scheduler) poll(ctx context.Context, se store.Search) {
 	pollCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	listings, err := src.Search(pollCtx, se.Spec())
+	var listings []source.Listing
+	var err error
+	if len(se.Image) > 0 {
+		searcher, ok := src.(source.ImageSearcher)
+		if !ok {
+			s.log.Warn("scheduler: source does not support image search, skipping", "source", se.Source, "search", se.ID)
+			return
+		}
+		listings, err = searcher.SearchByImage(pollCtx, se.Image, se.Spec())
+	} else {
+		listings, err = src.Search(pollCtx, se.Spec())
+	}
 	if err != nil {
 		s.log.Warn("scheduler: search failed", "source", se.Source, "search", se.ID, "err", err)
 		return

@@ -105,6 +105,29 @@ const pageTemplate = `<!doctype html>
     <p class="muted" id="monitors-empty" style="display:none">Nothing monitored yet — paste an item URL above, or click “monitor” on a find.</p>
   </div>
 
+  <h2 class="fold-h" id="imgsearch-head">▸ Image search</h2>
+  <div id="imgsearch-section" style="display:none">
+    <div class="feedbar">
+      <input type="file" id="img-file" accept="image/*">
+      <select id="img-source" style="max-width:180px"></select>
+      <select id="img-domain" title="Vinted marketplace (each country is separate)" style="max-width:220px;display:none">
+        <option value="www.vinted.de">Vinted DE/AT (vinted.de)</option>
+        <option value="www.vinted.com">Vinted US (vinted.com)</option>
+        <option value="www.vinted.fr">Vinted FR (vinted.fr)</option>
+        <option value="www.vinted.it">Vinted IT (vinted.it)</option>
+        <option value="www.vinted.es">Vinted ES (vinted.es)</option>
+        <option value="www.vinted.nl">Vinted NL (vinted.nl)</option>
+        <option value="www.vinted.pl">Vinted PL (vinted.pl)</option>
+        <option value="www.vinted.co.uk">Vinted UK (vinted.co.uk)</option>
+      </select>
+      <button type="button" id="img-go">Search</button>
+      <button type="button" id="img-save" style="display:none">Save as recurring search</button>
+      <button type="button" id="img-clear" style="display:none">Clear</button>
+      <span class="muted" id="img-status" style="font-size:.8rem"></span>
+    </div>
+    <div class="grid" id="imgsearch-grid"></div>
+  </div>
+
   <h2 class="fold-h" id="settings-head">▸ Settings</h2>
   <div id="settings-section" style="display:none">
     <form id="settings-form">
@@ -174,7 +197,7 @@ const pageTemplate = `<!doctype html>
   (function () {
     var INTERVAL = 15000;
     var expanded = {};
-    var sources = [{{range .Sources}}{id:"{{.ID}}",name:"{{.Name}}"},{{end}}];
+    var sources = [{{range .Sources}}{id:"{{.ID}}",name:"{{.Name}}",images:{{.Images}}},{{end}}];
     function sourceName(id){ for (var i=0;i<sources.length;i++) if (sources[i].id===id) return sources[i].name; return id; }
 
     function el(tag, cls, text) { var e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
@@ -244,7 +267,9 @@ const pageTemplate = `<!doctype html>
         tr.appendChild(exp);
         tr.appendChild(el('td', null, String(se.id)));
         tr.appendChild(el('td', null, sourceName(se.source)));
-        var qcell = el('td', 'query', se.query.length > 70 ? se.query.slice(0, 70) + '…' : se.query);
+        var qcell = el('td', 'query');
+        if (se.isImage) { var ip = el('span','pill','image'); ip.style.marginRight='.3rem'; qcell.appendChild(ip); }
+        qcell.appendChild(document.createTextNode(se.query.length > 70 ? se.query.slice(0, 70) + '…' : se.query));
         qcell.title = se.query;
         tr.appendChild(qcell);
         tr.appendChild(el('td', null, se.interval));
@@ -325,6 +350,75 @@ const pageTemplate = `<!doctype html>
         var open = sec.style.display !== 'none';
         sec.style.display = open ? 'none' : '';
         head.textContent = (open ? '▸' : '▾') + ' Monitoring';
+      };
+    })();
+
+    (function(){
+      var head = document.getElementById('imgsearch-head');
+      head.onclick = function(){
+        var sec = document.getElementById('imgsearch-section');
+        var open = sec.style.display !== 'none';
+        sec.style.display = open ? 'none' : '';
+        head.textContent = (open ? '▸' : '▾') + ' Image search';
+      };
+      var status = document.getElementById('img-status');
+      var grid = document.getElementById('imgsearch-grid');
+      var clearBtn = document.getElementById('img-clear');
+      var saveBtn = document.getElementById('img-save');
+      var srcSel = document.getElementById('img-source');
+      var domainInput = document.getElementById('img-domain');
+      sources.filter(function(s){ return s.images; }).forEach(function(s){
+        var o = el('option', null, s.name); o.value = s.id; srcSel.appendChild(o);
+      });
+      function imgSource() { return srcSel.value || 'mercari'; }
+      function syncDomain() { domainInput.style.display = imgSource() === 'vinted' ? '' : 'none'; }
+      srcSel.addEventListener('change', syncDomain); syncDomain();
+      function runImageSearch() {
+        var input = document.getElementById('img-file');
+        var f = input.files && input.files[0];
+        if (!f) { status.textContent = 'choose an image first'; return; }
+        status.textContent = 'searching…';
+        var fd = new FormData();
+        fd.append('image', f);
+        fd.append('source', imgSource());
+        if (imgSource() === 'vinted' && domainInput.value.trim()) fd.append('domain', domainInput.value.trim());
+        fetch('/image_search', {method:'POST', body: fd})
+          .then(function(r){ return r.ok ? r.json() : r.text().then(function(t){ return Promise.reject(t); }); })
+          .then(function(data){
+            var list = data.listings || [];
+            grid.replaceChildren.apply(grid, list.map(card));
+            status.textContent = list.length ? list.length + ' similar item(s)' : 'no similar items found';
+            clearBtn.style.display = list.length ? '' : 'none';
+            saveBtn.style.display = list.length ? '' : 'none';
+          })
+          .catch(function(t){ status.textContent = typeof t === 'string' && t ? t.trim() : 'image search failed'; });
+      }
+      document.getElementById('img-go').onclick = runImageSearch;
+      document.getElementById('img-file').addEventListener('change', runImageSearch);
+      saveBtn.onclick = function(){
+        var input = document.getElementById('img-file');
+        var f = input.files && input.files[0];
+        if (!f) { status.textContent = 'choose an image first'; return; }
+        var label = prompt('Name for this search:', 'image: ' + f.name);
+        if (label === null) return;
+        saveBtn.disabled = true;
+        var fd = new FormData();
+        fd.append('image', f);
+        fd.append('source', imgSource());
+        if (imgSource() === 'vinted' && domainInput.value.trim()) fd.append('domain', domainInput.value.trim());
+        if (label.trim()) fd.append('query', label.trim());
+        fetch('/searches/image', {method:'POST', body: fd})
+          .then(function(r){
+            saveBtn.disabled = false;
+            if (r.status===204 || r.ok) { status.textContent = 'saved — now checking on your search interval'; refresh(); }
+            else { r.text().then(function(t){ status.textContent = t.trim() || 'could not save search'; }); }
+          })
+          .catch(function(){ saveBtn.disabled = false; status.textContent = 'could not save search'; });
+      };
+      clearBtn.onclick = function(){
+        grid.replaceChildren(); status.textContent = '';
+        document.getElementById('img-file').value = '';
+        clearBtn.style.display = 'none'; saveBtn.style.display = 'none';
       };
     })();
 

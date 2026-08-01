@@ -97,22 +97,28 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 	}
 
 	var out struct {
-		Items []struct {
-			ID         string      `json:"id"`
-			Name       string      `json:"name"`
-			Price      string      `json:"price"`
-			IsNoPrice  bool        `json:"isNoPrice"`
-			Thumbnails []string    `json:"thumbnails"`
-			ItemType   string      `json:"itemType"`
-			Created    json.Number `json:"created"`
-		} `json:"items"`
+		Items []mercariSearchItem `json:"items"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("mercari: decode: %w", err)
 	}
+	return mercariListings(out.Items), nil
+}
 
-	listings := make([]Listing, 0, len(out.Items))
-	for _, it := range out.Items {
+type mercariSearchItem struct {
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	Price      string      `json:"price"`
+	IsNoPrice  bool        `json:"isNoPrice"`
+	Status     string      `json:"status"`
+	Thumbnails []string    `json:"thumbnails"`
+	ItemType   string      `json:"itemType"`
+	Created    json.Number `json:"created"`
+}
+
+func mercariListings(items []mercariSearchItem) []Listing {
+	listings := make([]Listing, 0, len(items))
+	for _, it := range items {
 		price, _ := strconv.ParseFloat(it.Price, 64)
 		if it.IsNoPrice || isSentinelPrice(it.Price) {
 			price = 0
@@ -139,7 +145,93 @@ func (m *mercari) Search(ctx context.Context, spec SearchSpec) ([]Listing, error
 			ListedAt:   listedAt,
 		})
 	}
-	return listings, nil
+	return listings
+}
+
+func (m *mercari) SearchByImage(ctx context.Context, image []byte, spec SearchSpec) ([]Listing, error) {
+	photo, err := NormalizeSearchImage(image)
+	if err != nil {
+		return nil, fmt.Errorf("mercari: prepare image: %w", err)
+	}
+
+	priceMin, priceMax := 0, 0
+	if spec.MinPrice != nil {
+		priceMin = int(*spec.MinPrice)
+	}
+	if spec.MaxPrice != nil {
+		priceMax = int(*spec.MaxPrice)
+	}
+	reqBody := map[string]any{
+		"searchSessionId": uuidV4(),
+		"pageSize":        120,
+		"pageToken":       "",
+		"config":          map[string]any{"responseToggles": []string{"WITH_FILTERING"}},
+		"imageSearchCondition": map[string]any{
+			"photoBinary": base64.StdEncoding.EncodeToString(photo),
+			"searchCondition": map[string]any{
+				"keyword": "", "excludeKeyword": "",
+				"sort": "SORT_SIMILARITY", "order": "ORDER_DESC",
+				"status": []string{}, "sizeId": []string{}, "categoryId": []int{}, "brandId": []int{},
+				"sellerId": []string{}, "priceMin": priceMin, "priceMax": priceMax,
+				"itemConditionId": []int{}, "shippingPayerId": []int{}, "shippingFromArea": []int{},
+				"shippingMethod": []string{}, "colorId": []int{}, "hasCoupon": false,
+				"attributes": []any{}, "itemTypes": []string{}, "skuIds": []string{},
+				"shopIds": []string{}, "excludeShippingMethodIds": []string{},
+			},
+		},
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := "https://api.mercari.jp/v2/entities:imageSearch"
+	dpop, err := mercariDPoP(http.MethodPost, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("mercari: dpop: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("X-Platform", "web")
+	req.Header.Set("DPoP", dpop)
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("mercari: image search status %s: %s", resp.Status, truncate(body, 300))
+	}
+	var out struct {
+		Items []mercariSearchItem `json:"items"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("mercari: decode: %w", err)
+	}
+
+	items := out.Items
+	if spec.Param("status") != "all" {
+		items = items[:0:0]
+		for _, it := range out.Items {
+			if it.Status == "ITEM_STATUS_ON_SALE" {
+				items = append(items, it)
+			}
+		}
+	}
+	listings := mercariListings(items)
+	filtered := listings[:0:0]
+	for _, l := range listings {
+		if withinPriceBounds(spec, l.Price) {
+			filtered = append(filtered, l)
+		}
+	}
+	return filtered, nil
 }
 
 func (m *mercari) EnrichListing(ctx context.Context, externalID string) (float64, string, map[string]string, bool) {

@@ -153,6 +153,9 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 	if err := s.addColumnIfMissing(ctx, "monitored_items", "ends_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := s.addColumnIfMissing(ctx, "searches", "image", "BLOB"); err != nil {
+		return err
+	}
 	return s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
 }
 
@@ -258,7 +261,7 @@ func (s *Store) UserFromIdentity(ctx context.Context, subject, email, name strin
 func (s *Store) ListSearchesForUser(ctx context.Context, userID int64) ([]Search, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, user_id, source, query, params, min_price, max_price,
-		        interval_seconds, enabled, created_at, last_run_at
+		        interval_seconds, enabled, created_at, last_run_at, image
 		 FROM searches WHERE user_id = ? ORDER BY id`, userID)
 	if err != nil {
 		return nil, err
@@ -277,7 +280,7 @@ func (s *Store) ListSearchesForUser(ctx context.Context, userID int64) ([]Search
 
 func (s *Store) ListSearches(ctx context.Context, enabledOnly bool) ([]Search, error) {
 	q := `SELECT id, user_id, source, query, params, min_price, max_price,
-	             interval_seconds, enabled, created_at, last_run_at
+	             interval_seconds, enabled, created_at, last_run_at, image
 	      FROM searches`
 	if enabledOnly {
 		q += ` WHERE enabled = 1`
@@ -303,7 +306,7 @@ func (s *Store) ListSearches(ctx context.Context, enabledOnly bool) ([]Search, e
 func (s *Store) GetSearch(ctx context.Context, id int64) (Search, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, user_id, source, query, params, min_price, max_price,
-		        interval_seconds, enabled, created_at, last_run_at
+		        interval_seconds, enabled, created_at, last_run_at, image
 		 FROM searches WHERE id = ?`, id)
 	return scanSearch(row)
 }
@@ -316,11 +319,11 @@ func (s *Store) CreateSearch(ctx context.Context, se Search) (int64, error) {
 	interval := int64(se.Interval / time.Second)
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO searches (user_id, source, query, params, min_price, max_price,
-		                       interval_seconds, enabled, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       interval_seconds, enabled, created_at, image)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		se.UserID, se.Source, se.Query, string(params),
 		nullFloat(se.MinPrice), nullFloat(se.MaxPrice),
-		interval, boolToInt(se.Enabled), time.Now().Unix())
+		interval, boolToInt(se.Enabled), time.Now().Unix(), se.Image)
 	if err != nil {
 		return 0, err
 	}
@@ -492,7 +495,7 @@ func scanSearch(sc scanner) (Search, error) {
 		lastRun  sql.NullInt64
 	)
 	if err := sc.Scan(&se.ID, &se.UserID, &se.Source, &se.Query, &params,
-		&minP, &maxP, &interval, asBool(&se.Enabled), asTime(&se.CreatedAt), &lastRun); err != nil {
+		&minP, &maxP, &interval, asBool(&se.Enabled), asTime(&se.CreatedAt), &lastRun, &se.Image); err != nil {
 		return Search{}, err
 	}
 	se.Params = decodeMap(params)

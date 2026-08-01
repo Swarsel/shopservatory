@@ -28,6 +28,7 @@ type Search struct {
 	Enabled   bool
 	CreatedAt time.Time
 	LastRunAt *time.Time
+	Image     []byte
 }
 
 func (s Search) Spec() source.SearchSpec {

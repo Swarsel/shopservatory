@@ -71,6 +71,10 @@ type ListingEnricher interface {
 	EnrichListing(ctx context.Context, externalID string) (price float64, saleType string, extra map[string]string, ok bool)
 }
 
+type ImageSearcher interface {
+	SearchByImage(ctx context.Context, image []byte, spec SearchSpec) ([]Listing, error)
+}
+
 type Client struct {
 	http      *http.Client
 	userAgent string

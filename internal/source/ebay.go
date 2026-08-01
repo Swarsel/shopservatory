@@ -78,7 +78,55 @@ func (e *ebay) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ebay: search status %s: %s", resp.Status, truncate(body, 300))
 	}
+	return ebayListings(body, spec)
+}
 
+func (e *ebay) SearchByImage(ctx context.Context, image []byte, spec SearchSpec) ([]Listing, error) {
+	photo, err := NormalizeSearchImage(image)
+	if err != nil {
+		return nil, fmt.Errorf("ebay: prepare image: %w", err)
+	}
+	token, err := e.accessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ebay: auth: %w", err)
+	}
+
+	q := url.Values{}
+	q.Set("limit", "50")
+	if v := spec.Param("category_ids"); v != "" {
+		q.Set("category_ids", v)
+	}
+	if f := e.priceFilter(spec); f != "" {
+		q.Set("filter", f)
+	}
+
+	payload, err := json.Marshal(map[string]string{"image": base64.StdEncoding.EncodeToString(photo)})
+	if err != nil {
+		return nil, err
+	}
+	endpoint := "https://api.ebay.com/buy/browse/v1/item_summary/search_by_image?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(payload)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-EBAY-C-MARKETPLACE-ID", e.cfg.Marketplace)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ebay: image search status %s: %s", resp.Status, truncate(body, 300))
+	}
+	return ebayListings(body, spec)
+}
+
+func ebayListings(body []byte, spec SearchSpec) ([]Listing, error) {
 	var out struct {
 		ItemSummaries []struct {
 			ItemID    string `json:"itemId"`

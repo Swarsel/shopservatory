@@ -116,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /searches/{id}/delete", b(http.HandlerFunc(s.handleDelete)))
 	mux.Handle("POST /searches/{id}/toggle", b(http.HandlerFunc(s.handleToggle)))
 	mux.Handle("POST /searches/{id}/run", b(http.HandlerFunc(s.handleRun)))
+	mux.Handle("POST /image_search", b(http.HandlerFunc(s.handleImageSearch)))
+	mux.Handle("POST /searches/image", b(http.HandlerFunc(s.handleCreateImageSearch)))
 	mux.Handle("POST /monitors", b(http.HandlerFunc(s.handleAddMonitor)))
 	mux.Handle("POST /monitors/{id}/update", b(http.HandlerFunc(s.handleUpdateMonitor)))
 	mux.Handle("POST /monitors/{id}/delete", b(http.HandlerFunc(s.handleDeleteMonitor)))
@@ -136,7 +138,151 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/searches/{id}/toggle", a(http.HandlerFunc(s.handleToggle)))
 	mux.Handle("POST /api/v1/searches/{id}/run", a(http.HandlerFunc(s.handleRun)))
 	mux.Handle("POST /api/v1/settings", a(http.HandlerFunc(s.handleSettings)))
+	mux.Handle("POST /api/v1/image_search", a(http.HandlerFunc(s.handleImageSearch)))
+	mux.Handle("POST /api/v1/searches/image", a(http.HandlerFunc(s.handleCreateImageSearch)))
 	return mux
+}
+
+func (s *Server) handleCreateImageSearch(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(12 << 20); err != nil {
+		http.Error(w, "expected multipart form with an image", http.StatusBadRequest)
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "missing image file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, 12<<20))
+	if err != nil {
+		http.Error(w, "could not read image", http.StatusBadRequest)
+		return
+	}
+	img, err := source.NormalizeSearchImage(raw)
+	if err != nil {
+		http.Error(w, "could not process image: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	srcID := r.FormValue("source")
+	if srcID == "" {
+		srcID = "mercari"
+	}
+	srcObj, ok := s.registry.Get(srcID)
+	if !ok {
+		http.Error(w, "unknown source", http.StatusBadRequest)
+		return
+	}
+	if _, ok := srcObj.(source.ImageSearcher); !ok {
+		http.Error(w, "this source does not support image search", http.StatusBadRequest)
+		return
+	}
+
+	query := strings.TrimSpace(r.FormValue("query"))
+	if query == "" {
+		query = "image: " + header.Filename
+	}
+	interval := s.searchDefault(r.Context(), auth.UserID(r.Context()))
+	if v := strings.TrimSpace(r.FormValue("interval")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			interval = d
+		}
+	}
+	var params map[string]string
+	if d := strings.TrimSpace(r.FormValue("domain")); d != "" {
+		params = map[string]string{"domain": d}
+	}
+	se := store.Search{
+		UserID:   auth.UserID(r.Context()),
+		Source:   srcID,
+		Query:    query,
+		Params:   params,
+		MinPrice: parsePrice(r.FormValue("min_price")),
+		MaxPrice: parsePrice(r.FormValue("max_price")),
+		Interval: interval,
+		Enabled:  true,
+		Image:    img,
+	}
+	id, err := s.store.CreateSearch(r.Context(), se)
+	if err != nil {
+		s.fail(w, "create image search", err)
+		return
+	}
+	s.sched.RunNow(id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleImageSearch(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(12 << 20); err != nil {
+		http.Error(w, "expected multipart form with an image", http.StatusBadRequest)
+		return
+	}
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "missing image file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	img, err := io.ReadAll(io.LimitReader(file, 12<<20))
+	if err != nil {
+		http.Error(w, "could not read image", http.StatusBadRequest)
+		return
+	}
+
+	srcID := r.FormValue("source")
+	if srcID == "" {
+		srcID = "mercari"
+	}
+	src, ok := s.registry.Get(srcID)
+	if !ok {
+		http.Error(w, "unknown source", http.StatusBadRequest)
+		return
+	}
+	searcher, ok := src.(source.ImageSearcher)
+	if !ok {
+		http.Error(w, "this source does not support image search", http.StatusBadRequest)
+		return
+	}
+
+	spec := source.SearchSpec{Params: map[string]string{"status": r.FormValue("status"), "domain": r.FormValue("domain")}}
+	if v, err := strconv.ParseFloat(r.FormValue("min"), 64); err == nil && v > 0 {
+		spec.MinPrice = &v
+	}
+	if v, err := strconv.ParseFloat(r.FormValue("max"), 64); err == nil && v > 0 {
+		spec.MaxPrice = &v
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	listings, err := searcher.SearchByImage(ctx, img, spec)
+	if err != nil {
+		s.log.Warn("web: image search", "source", srcID, "err", err)
+		msg := "image search failed: " + err.Error()
+		if strings.Contains(err.Error(), "status 400") {
+			msg = "the source could not process this image — try cropping to just the item"
+		}
+		http.Error(w, msg, http.StatusBadGateway)
+		return
+	}
+
+	userID := auth.UserID(r.Context())
+	target := s.fx.Resolve(s.store.UserCurrency(r.Context(), userID))
+	views := make([]listingView, 0, len(listings))
+	for _, l := range listings {
+		views = append(views, listingView{
+			Source: srcID, ExternalID: l.ExternalID, Title: l.Title,
+			Price:       priceString(l.Price, l.Currency),
+			PriceValue:  l.Price,
+			Currency:    l.Currency,
+			PriceApprox: s.fx.FormatFor(l.Price, l.Currency, target),
+			URL:         l.URL, ImageURL: l.ImageURL, SaleType: l.SaleType,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(map[string]any{"listings": views}); err != nil {
+		s.log.Error("web: encode image search", "err", err)
+	}
 }
 
 type indexData struct {
@@ -145,7 +291,11 @@ type indexData struct {
 	Now      time.Time
 }
 
-type sourceOption struct{ ID, Name string }
+type sourceOption struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Images bool   `json:"images"`
+}
 
 type searchView struct {
 	ID       int64             `json:"id"`
@@ -157,6 +307,7 @@ type searchView struct {
 	MinPrice string            `json:"minPrice"`
 	MaxPrice string            `json:"maxPrice"`
 	Params   map[string]string `json:"params"`
+	IsImage  bool              `json:"isImage"`
 }
 
 type listingView struct {
@@ -191,7 +342,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	target := s.fx.Resolve(s.store.UserCurrency(r.Context(), auth.UserID(r.Context())))
 	data := indexData{Now: time.Now(), Currency: target}
 	for _, src := range s.registry.All() {
-		data.Sources = append(data.Sources, sourceOption{ID: src.ID(), Name: src.DisplayName()})
+		_, images := src.(source.ImageSearcher)
+		data.Sources = append(data.Sources, sourceOption{ID: src.ID(), Name: src.DisplayName(), Images: images})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, data); err != nil {
@@ -396,7 +548,8 @@ func (s *Server) handleAPIMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPISources(w http.ResponseWriter, r *http.Request) {
 	out := make([]sourceOption, 0)
 	for _, src := range s.registry.All() {
-		out = append(out, sourceOption{ID: src.ID(), Name: src.DisplayName()})
+		_, images := src.(source.ImageSearcher)
+		out = append(out, sourceOption{ID: src.ID(), Name: src.DisplayName(), Images: images})
 	}
 	writeJSON(w, out)
 }
@@ -416,7 +569,7 @@ func (s *Server) searchViews(ctx context.Context, userID int64) ([]searchView, e
 			ID: se.ID, Source: se.Source, Query: se.Query,
 			Interval: se.Interval.String(), Enabled: se.Enabled, LastRun: lr,
 			MinPrice: floatStr(se.MinPrice), MaxPrice: floatStr(se.MaxPrice),
-			Params: orEmptyMap(se.Params),
+			Params: orEmptyMap(se.Params), IsImage: len(se.Image) > 0,
 		})
 	}
 	return out, nil

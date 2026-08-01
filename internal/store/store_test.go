@@ -85,3 +85,41 @@ func TestPerUserScoping(t *testing.T) {
 		t.Fatalf("source filter should match 1, got %d", total)
 	}
 }
+
+func TestImageSearchRoundTrip(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+
+	u, _ := st.UserFromIdentity(ctx, "sub-i", "i@example.com", "Ida")
+	img := []byte{0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0x03}
+	id, err := st.CreateSearch(ctx, Search{UserID: u.ID, Source: "mercari", Query: "image: card.png", Interval: time.Minute, Enabled: true, Image: img})
+	if err != nil {
+		t.Fatal(err)
+	}
+	se, err := st.GetSearch(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(se.Image) != string(img) {
+		t.Fatalf("image blob did not round-trip: %v", se.Image)
+	}
+	se.Query = "renamed"
+	se.Interval = 2 * time.Minute
+	if err := st.UpdateSearch(ctx, se); err != nil {
+		t.Fatal(err)
+	}
+	se2, _ := st.GetSearch(ctx, id)
+	if string(se2.Image) != string(img) || se2.Query != "renamed" {
+		t.Fatalf("update must preserve image, got %q img %d bytes", se2.Query, len(se2.Image))
+	}
+	list, _ := st.ListSearches(ctx, true)
+	found := false
+	for _, s := range list {
+		if s.ID == id && len(s.Image) == len(img) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("scheduler listing must include the image")
+	}
+}
