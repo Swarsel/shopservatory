@@ -304,3 +304,27 @@ func withinPriceBounds(spec SearchSpec, price float64) bool {
 	}
 	return true
 }
+
+func anyCategoryExcluded(spec SearchSpec, categories []string) bool {
+	for _, c := range categories {
+		if specExcludesCategory(spec, c) {
+			return true
+		}
+	}
+	return false
+}
+
+var categoryFilterSources = map[string]bool{
+	"mercari":       true,
+	"ebay":          true,
+	"willhaben":     true,
+	"kleinanzeigen": true,
+	"bazar":         true,
+	"craigslist":    true,
+	"jmty":          true,
+	"rakuma":        true,
+}
+
+func SupportsCategoryFilter(sourceID string) bool {
+	return categoryFilterSources[strings.ToLower(sourceID)]
+}

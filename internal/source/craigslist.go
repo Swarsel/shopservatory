@@ -229,6 +229,10 @@ func clDecode(body []byte, searchSubdomain string, spec SearchSpec) ([]Listing, 
 			subdomain, subarea = locs[i].subdomain, locs[i].subarea
 		}
 
+		category := strconv.Itoa(catID)
+		if specExcludesCategory(spec, category) {
+			continue
+		}
 		listings = append(listings, Listing{
 			ExternalID: strconv.FormatInt(postID, 10),
 			Title:      title,
@@ -238,6 +242,7 @@ func clDecode(body []byte, searchSubdomain string, spec SearchSpec) ([]Listing, 
 			ImageURL:   clImage(imageToken),
 			Extra: map[string]string{
 				"location": subarea,
+				"category": category,
 			},
 		})
 	}

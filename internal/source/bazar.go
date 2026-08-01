@@ -45,6 +45,10 @@ func (b *bazar) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) 
 		if !withinPriceBounds(spec, price) {
 			continue
 		}
+		cats := []string{it.Common.Category.ID, it.Common.SubCategory.ID, it.Specific.Section.ID}
+		if anyCategoryExcluded(spec, cats) {
+			continue
+		}
 		listed, _ := time.Parse(time.RFC3339, it.MetaInformation.Created)
 		listings = append(listings, Listing{
 			ExternalID: strconv.FormatInt(it.ID, 10),
@@ -57,10 +61,16 @@ func (b *bazar) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) 
 			Extra: map[string]string{
 				"location":   it.Common.Location.DisplayText,
 				"price_type": it.Common.Price.PriceType.Name,
+				"category":   firstNonEmpty(it.Specific.Section.ID, it.Common.SubCategory.ID, it.Common.Category.ID),
 			},
 		})
 	}
 	return listings, nil
+}
+
+type bazarCategory struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type bazarItem struct {
@@ -77,7 +87,12 @@ type bazarItem struct {
 				Name string `json:"name"`
 			} `json:"priceType"`
 		} `json:"price"`
+		Category    bazarCategory `json:"category"`
+		SubCategory bazarCategory `json:"subCategory"`
 	} `json:"common"`
+	Specific struct {
+		Section bazarCategory `json:"section"`
+	} `json:"specific"`
 	MetaInformation struct {
 		Created string `json:"created"`
 	} `json:"metaInformation"`

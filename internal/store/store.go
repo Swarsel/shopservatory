@@ -487,6 +487,15 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 		where += ` AND l.title NOT LIKE ? ESCAPE '\'`
 		args = append(args, "%"+escapeLike(term)+"%")
 	}
+	for src, cats := range s.excludedFeedCategories(ctx, userID) {
+		for _, cat := range cats {
+			where += ` AND NOT (l.source = ? AND (
+				json_extract(l.extra, '$.category') = ?
+				OR ',' || COALESCE(json_extract(l.extra, '$.categories'), '') || ',' LIKE ?
+			))`
+			args = append(args, src, cat, "%,"+escapeLike(cat)+",%")
+		}
+	}
 	if filter != "" {
 		clause := `(l.title LIKE ? ESCAPE '\'`
 		args = append(args, "%"+escapeLike(filter)+"%")
@@ -517,6 +526,44 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 	defer rows.Close()
 	listings, err := scanListings(rows)
 	return listings, total, err
+}
+
+func (s *Store) excludedFeedCategories(ctx context.Context, userID int64) map[string][]string {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT source, exclude_categories FROM source_exclusions
+		 WHERE user_id = ? AND exclude_categories != ''
+		 UNION
+		 SELECT source, exclude_categories FROM searches
+		 WHERE user_id = ? AND exclude_categories != ''`, userID, userID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := map[string][]string{}
+	seen := map[string]bool{}
+	total := 0
+	for rows.Next() {
+		var src, raw string
+		if err := rows.Scan(&src, &raw); err != nil {
+			return out
+		}
+		for _, f := range strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '\n' || r == ' '
+		}) {
+			cat := strings.TrimSpace(f)
+			key := src + "/" + cat
+			if cat == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out[src] = append(out[src], cat)
+			if total++; total >= 60 {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func (s *Store) excludedFeedTerms(ctx context.Context, userID int64) []string {

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -114,7 +115,17 @@ func (m *mercari) postFilter(ctx context.Context, spec SearchSpec, items []merca
 		}
 		kept = append(kept, it)
 	}
-	return FilterExcluded(spec, mercariListings(kept))
+	listings := FilterExcluded(spec, mercariListings(kept))
+	for i := range listings {
+		chain := m.categories.ancestors(ctx, m, listings[i].Extra["category"])
+		if len(chain) > 1 {
+			if listings[i].Extra == nil {
+				listings[i].Extra = map[string]string{}
+			}
+			listings[i].Extra["categories"] = strings.Join(chain, ",")
+		}
+	}
+	return listings
 }
 
 type mercariSearchItem struct {
@@ -148,7 +159,7 @@ func mercariListings(items []mercariSearchItem) []Listing {
 		if it.ItemType == "ITEM_TYPE_BEYOND" {
 			itemURL = "https://jp.mercari.com/shops/product/" + it.ID
 		}
-		listings = append(listings, Listing{
+		l := Listing{
 			ExternalID: it.ID,
 			Title:      it.Name,
 			Price:      price,
@@ -156,7 +167,11 @@ func mercariListings(items []mercariSearchItem) []Listing {
 			URL:        itemURL,
 			ImageURL:   thumb,
 			ListedAt:   listedAt,
-		})
+		}
+		if it.CategoryID != "" {
+			l.Extra = map[string]string{"category": it.CategoryID}
+		}
+		listings = append(listings, l)
 	}
 	return listings
 }

@@ -45,6 +45,10 @@ func (j *jmty) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 		if !withinPriceBounds(spec, price) {
 			return
 		}
+		category := jmtyCategory(sel, href)
+		if specExcludesCategory(spec, category) {
+			return
+		}
 		img, _ := sel.Find("img.p-item-image").First().Attr("src")
 		listings = append(listings, Listing{
 			ExternalID: lastPathSegment(href),
@@ -55,6 +59,7 @@ func (j *jmty) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 			ImageURL:   img,
 			Extra: map[string]string{
 				"location": collapseSpaces(sel.Find(".p-item-secondary-important").First().Text()),
+				"category": category,
 			},
 		})
 	})
@@ -75,4 +80,20 @@ func jmtyURL(spec SearchSpec) string {
 	q := url.Values{}
 	q.Set("keyword", spec.Query)
 	return "https://jmty.jp/all/sale?" + q.Encode()
+}
+
+func jmtyCategory(sel *goquery.Selection, itemHref string) string {
+	if h, ok := sel.Find(`.p-item-supplementary-info a[href*="/g-"]`).Last().Attr("href"); ok {
+		if i := strings.LastIndex(h, "/g-"); i >= 0 {
+			if id := strings.Trim(h[i+3:], "/"); id != "" {
+				return id
+			}
+		}
+	}
+	for _, seg := range strings.Split(itemHref, "/") {
+		if strings.HasPrefix(seg, "sale-") {
+			return seg
+		}
+	}
+	return ""
 }

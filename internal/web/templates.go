@@ -81,7 +81,7 @@ const pageTemplate = `<!doctype html>
         <div>
           <label>Exclude categories <span class="muted">(where supported)</span></label>
           <input name="exclude_categories" id="f-excat" placeholder="optional — category ids"
-                 title="Comma-separated category ids. Mercari: a parent id also excludes its children (3088 = ファッション/Fashion). Rakuma: exact ids only; a find's id is shown on its card. Other sources do not expose categories.">
+                 title="Comma-separated category ids; a find's id is shown on its card. Supported: mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty, rakuma. Excluding a parent id also drops its children on mercari, ebay and willhaben; the others match exact ids only.">
         </div>
       </div>
       <div class="row">
@@ -173,8 +173,9 @@ const pageTemplate = `<!doctype html>
     </form>
     <h3>Per-source exclusions</h3>
     <p class="muted">Applied to every search on that source, on top of the search's own exclusions.
-      Category ids are supported for Mercari (parents include their children, e.g. 3088 = ファッション)
-      and Rakuma (exact leaf ids only — a find's id is shown on its card).</p>
+      Category ids work on mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty and rakuma —
+      each find's id is shown on its card. On mercari, ebay and willhaben a parent id also excludes its
+      children; the others match exact ids only.</p>
     <table>
       <thead><tr><th>Source</th><th>Exclude keywords</th><th>Exclude category ids</th><th></th></tr></thead>
       <tbody id="srcex"></tbody>
@@ -236,7 +237,7 @@ const pageTemplate = `<!doctype html>
     var expanded = {};
     var groupExpanded = {};
     var currentSearches = [];
-    var sources = [{{range .Sources}}{id:"{{.ID}}",name:"{{.Name}}",images:{{.Images}}},{{end}}];
+    var sources = [{{range .Sources}}{id:"{{.ID}}",name:"{{.Name}}",images:{{.Images}},categories:{{.Categories}}},{{end}}];
     function sourceName(id){ for (var i=0;i<sources.length;i++) if (sources[i].id===id) return sources[i].name; return id; }
 
     function el(tag, cls, text) { var e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
@@ -622,8 +623,8 @@ const pageTemplate = `<!doctype html>
         var catCell = el('td');
         var cat = el('input');
         cat.value = cur.excludeCategories || '';
-        if (src.id === 'mercari' || src.id === 'rakuma') {
-          cat.placeholder = src.id === 'mercari' ? '3088' : '527';
+        if (src.categories) {
+          cat.placeholder = 'category ids';
         } else {
           cat.placeholder = 'not supported';
           cat.disabled = true;

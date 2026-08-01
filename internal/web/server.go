@@ -298,9 +298,10 @@ type indexData struct {
 }
 
 type sourceOption struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Images bool   `json:"images"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Images     bool   `json:"images"`
+	Categories bool   `json:"categories"`
 }
 
 type searchView struct {
@@ -352,7 +353,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := indexData{Now: time.Now(), Currency: target}
 	for _, src := range s.registry.All() {
 		_, images := src.(source.ImageSearcher)
-		data.Sources = append(data.Sources, sourceOption{ID: src.ID(), Name: src.DisplayName(), Images: images})
+		data.Sources = append(data.Sources, sourceOption{
+			ID: src.ID(), Name: src.DisplayName(), Images: images,
+			Categories: source.SupportsCategoryFilter(src.ID()),
+		})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, data); err != nil {
@@ -600,7 +604,10 @@ func (s *Server) handleAPISources(w http.ResponseWriter, r *http.Request) {
 	out := make([]sourceOption, 0)
 	for _, src := range s.registry.All() {
 		_, images := src.(source.ImageSearcher)
-		out = append(out, sourceOption{ID: src.ID(), Name: src.DisplayName(), Images: images})
+		out = append(out, sourceOption{
+			ID: src.ID(), Name: src.DisplayName(), Images: images,
+			Categories: source.SupportsCategoryFilter(src.ID()),
+		})
 	}
 	writeJSON(w, out)
 }

@@ -367,3 +367,60 @@ func TestFeedHidesExcludedListings(t *testing.T) {
 		t.Fatalf("hiding must compose with the text filter, got %d", total)
 	}
 }
+
+func TestFeedHidesExcludedCategories(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-fc", "fc@example.com", "Fc")
+	msid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "murakami", Interval: time.Minute, Enabled: true,
+	})
+	esid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "ebay", Query: "murakami", Interval: time.Minute, Enabled: true,
+	})
+
+	add := func(sid int64, src, id, title, cat, chain string) {
+		extra := map[string]string{"category": cat}
+		if chain != "" {
+			extra["categories"] = chain
+		}
+		if _, _, err := st.RecordListing(ctx, sid, src,
+			source.Listing{ExternalID: id, Title: title, Extra: extra}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(msid, "mercari", "m1", "fashion scarf", "23", "23,1,3088")
+	add(msid, "mercari", "m2", "trading card", "1328", "1328,82")
+	add(msid, "mercari", "m3", "no chain item", "3088", "")
+	add(esid, "ebay", "e1", "ebay item in cat 23", "23", "23,220")
+
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 100, 0); total != 4 {
+		t.Fatalf("baseline expected 4, got %d", total)
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "mercari", ExcludeCategories: "3088",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 100, 0)
+	titles := map[string]bool{}
+	for _, l := range got {
+		titles[l.Title] = true
+	}
+	if titles["fashion scarf"] {
+		t.Error("a parent id must hide an item via its stored ancestor chain")
+	}
+	if titles["no chain item"] {
+		t.Error("an exact leaf match must still hide")
+	}
+	if !titles["trading card"] {
+		t.Error("an unrelated mercari category must be kept")
+	}
+	if !titles["ebay item in cat 23"] {
+		t.Error("a mercari exclusion must not affect ebay")
+	}
+	if total != 2 {
+		t.Fatalf("expected 2 remaining, got %d: %v", total, titles)
+	}
+}

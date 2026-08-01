@@ -60,6 +60,10 @@ func (k *kleinanzeigen) Search(ctx context.Context, spec SearchSpec) ([]Listing,
 		}
 
 		href, _ := sel.Attr("data-href")
+		category := kleinanzeigenCategory(href)
+		if specExcludesCategory(spec, category) {
+			return
+		}
 
 		listings = append(listings, Listing{
 			ExternalID: id,
@@ -71,6 +75,7 @@ func (k *kleinanzeigen) Search(ctx context.Context, spec SearchSpec) ([]Listing,
 			Extra: map[string]string{
 				"location": collapseSpaces(sel.Find(".aditem-main--top--left").First().Text()),
 				"posted":   collapseSpaces(sel.Find(".aditem-main--top--right").First().Text()),
+				"category": category,
 			},
 		})
 	})
@@ -117,4 +122,16 @@ func parseKleinanzeigenPrice(s string) float64 {
 	}
 	v, _ := strconv.ParseFloat(t, 64)
 	return v
+}
+
+func kleinanzeigenCategory(href string) string {
+	tail := lastPathSegment(href)
+	parts := strings.Split(tail, "-")
+	if len(parts) != 3 {
+		return ""
+	}
+	if _, err := strconv.Atoi(parts[1]); err != nil {
+		return ""
+	}
+	return parts[1]
 }

@@ -77,6 +77,10 @@ func whListings(adverts []whAdvert, spec SearchSpec) []Listing {
 		if !withinPriceBounds(spec, price) {
 			continue
 		}
+		cats := whCategoryIDs(a.attr("categorytreeids"))
+		if anyCategoryExcluded(spec, cats) {
+			continue
+		}
 		image := firstField(a.attr("ALL_IMAGE_URLS"), "https://cache.willhaben.at/mmo/")
 		listings = append(listings, Listing{
 			ExternalID: a.ID,
@@ -87,6 +91,7 @@ func whListings(adverts []whAdvert, spec SearchSpec) []Listing {
 			ImageURL:   image,
 			Extra: map[string]string{
 				"location": a.attr("LOCATION"),
+				"category": whLeafCategory(cats),
 			},
 		})
 	}
@@ -182,6 +187,29 @@ func (a whAdvert) attr(name string) string {
 		}
 	}
 	return ""
+}
+
+func whCategoryIDs(raw string) []string {
+	raw = strings.TrimSpace(strings.Trim(strings.TrimSpace(raw), "[]"))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, path := range strings.Split(raw, ",") {
+		for _, id := range strings.Split(strings.TrimSpace(path), ";") {
+			if id = strings.TrimSpace(id); id != "" {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
+func whLeafCategory(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[len(ids)-1]
 }
 
 func firstField(v, prefix string) string {

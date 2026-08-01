@@ -51,6 +51,9 @@ func (e *ebay) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	q := url.Values{}
 	q.Set("q", spec.Query)
 	q.Set("limit", "50")
+	if len(spec.ExcludedCategoryIDs()) > 0 {
+		q.Set("fieldgroups", "EXTENDED")
+	}
 	if v := spec.Param("category_ids"); v != "" {
 		q.Set("category_ids", v)
 	}
@@ -93,6 +96,9 @@ func (e *ebay) SearchByImage(ctx context.Context, image []byte, spec SearchSpec)
 
 	q := url.Values{}
 	q.Set("limit", "50")
+	if len(spec.ExcludedCategoryIDs()) > 0 {
+		q.Set("fieldgroups", "EXTENDED")
+	}
 	if v := spec.Param("category_ids"); v != "" {
 		q.Set("category_ids", v)
 	}
@@ -126,6 +132,34 @@ func (e *ebay) SearchByImage(ctx context.Context, image []byte, spec SearchSpec)
 	return ebayListings(body, spec)
 }
 
+func ebayCategoryIDs(cats []struct {
+	CategoryID   string `json:"categoryId"`
+	CategoryName string `json:"categoryName"`
+}) []string {
+	out := make([]string, 0, len(cats))
+	for _, c := range cats {
+		if c.CategoryID != "" {
+			out = append(out, c.CategoryID)
+		}
+	}
+	return out
+}
+
+func ebayCategoryExcluded(spec SearchSpec, leaf, chain []string) bool {
+	want := spec.ExcludedCategoryIDs()
+	if len(want) == 0 {
+		return false
+	}
+	for _, have := range append(append([]string{}, leaf...), chain...) {
+		for _, w := range want {
+			if have == w {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func ebayListings(body []byte, spec SearchSpec) ([]Listing, error) {
 	var out struct {
 		ItemSummaries []struct {
@@ -145,8 +179,13 @@ func ebayListings(body []byte, spec SearchSpec) ([]Listing, error) {
 			Image      struct {
 				ImageURL string `json:"imageUrl"`
 			} `json:"image"`
-			BuyingOptions []string `json:"buyingOptions"`
-			Seller        struct {
+			BuyingOptions   []string `json:"buyingOptions"`
+			LeafCategoryIDs []string `json:"leafCategoryIds"`
+			Categories      []struct {
+				CategoryID   string `json:"categoryId"`
+				CategoryName string `json:"categoryName"`
+			} `json:"categories"`
+			Seller struct {
 				Username string `json:"username"`
 			} `json:"seller"`
 		} `json:"itemSummaries"`
@@ -157,6 +196,9 @@ func ebayListings(body []byte, spec SearchSpec) ([]Listing, error) {
 
 	listings := make([]Listing, 0, len(out.ItemSummaries))
 	for _, it := range out.ItemSummaries {
+		if ebayCategoryExcluded(spec, it.LeafCategoryIDs, ebayCategoryIDs(it.Categories)) {
+			continue
+		}
 		saleType := "fixed"
 		for _, o := range it.BuyingOptions {
 			if o == "AUCTION" {
@@ -174,6 +216,11 @@ func ebayListings(body []byte, spec SearchSpec) ([]Listing, error) {
 		extra := map[string]string{
 			"condition": it.Condition,
 			"seller":    it.Seller.Username,
+		}
+		if len(it.Categories) > 0 {
+			extra["category"] = it.Categories[0].CategoryID
+		} else if len(it.LeafCategoryIDs) > 0 {
+			extra["category"] = it.LeafCategoryIDs[0]
 		}
 		if saleType == "auction" {
 			extra["bids"] = strconv.Itoa(it.BidCount)
