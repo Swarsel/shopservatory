@@ -310,6 +310,25 @@ func TestHiddenControlsRenderInDashboard(t *testing.T) {
 	for _, want := range []string{
 		`id="hidden-filter"`, `id="hidden-thumbs"`, `id="hidden-prev"`, `id="hidden-next"`,
 		`id="hidden-pageinfo"`, "hiddenThumbs", "cardacts",
+		"function card(item, isHidden, noThumb)",
+		"card(item, true, !hiddenThumbs)",
+		"card(item, false, false)",
+		"hideItem(item, hb, !isHidden)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard is missing %q", want)
+		}
+	}
+	for _, bad := range []string{
+		"hideItem(item, hb, !noThumb)",
+		"noThumb ? 'Unhide",
+	} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the hide button must not depend on thumbnail state: found %q", bad)
+		}
+	}
+	for _, want := range []string{
+		"cardacts",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard is missing %q", want)

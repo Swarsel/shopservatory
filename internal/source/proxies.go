@@ -11,7 +11,22 @@ var doorzoMalls = map[string]string{
 	"paypayfleamarket": "paypay",
 	"rakuma":           "rakuma",
 	"snkrdunk":         "snkrdunk",
-	"yahooauctions":    "yahoo",
+}
+
+var buyeeItemPaths = map[string]string{
+	"yahooauctions": "item/yahoo/auction/",
+}
+
+func BuyeeURL(sourceID, externalID string) string {
+	path, ok := buyeeItemPaths[strings.ToLower(sourceID)]
+	if !ok {
+		return ""
+	}
+	id := strings.TrimSpace(externalID)
+	if id == "" {
+		return ""
+	}
+	return "https://buyee.jp/" + path + id
 }
 
 func DoorzoURL(sourceID, itemURL, externalID string) string {

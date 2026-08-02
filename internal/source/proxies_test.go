@@ -18,7 +18,6 @@ func TestDoorzoMallPerSource(t *testing.T) {
 		"paypayfleamarket": "/mall/paypay/detail/",
 		"rakuma":           "/mall/rakuma/detail/",
 		"snkrdunk":         "/mall/snkrdunk/detail/",
-		"yahooauctions":    "/mall/yahoo/detail/",
 	}
 	for src, want := range cases {
 		got := DoorzoURL(src, "https://example.com/item/1", "id1")
@@ -29,6 +28,15 @@ func TestDoorzoMallPerSource(t *testing.T) {
 		if !contains(got, want) {
 			t.Errorf("%s: %s missing %s", src, got, want)
 		}
+	}
+}
+
+func TestYahooAuctionsUsesBuyeeNotDoorzo(t *testing.T) {
+	if got := DoorzoURL("yahooauctions", "https://example.com/item/1", "id1"); got != "" {
+		t.Errorf("doorzo has no yahoo auctions mall, got %s", got)
+	}
+	if got := BuyeeURL("yahooauctions", "id1"); got != "https://buyee.jp/item/yahoo/auction/id1" {
+		t.Errorf("buyee url = %s", got)
 	}
 }
 

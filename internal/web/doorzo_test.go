@@ -23,7 +23,7 @@ func TestMonitorViewIncludesDoorzoURL(t *testing.T) {
 		url        string
 		wantDoorzo bool
 	}{
-		{"yahooauctions", "1238998047", "https://auctions.yahoo.co.jp/jp/auction/1238998047", true},
+		{"yahooauctions", "1238998047", "https://auctions.yahoo.co.jp/jp/auction/1238998047", false},
 		{"paypayfleamarket", "z651582616", "https://buyee.jp/paypayfleamarket/item/z651582616", true},
 		{"mercari", "m123", "https://jp.mercari.com/item/m123", true},
 		{"rakuma", "r123", "https://item.fril.jp/r123", true},
@@ -62,10 +62,11 @@ func TestMonitorViewIncludesDoorzoURL(t *testing.T) {
 		}
 	}
 
-	if dz := bySource["yahooauctions"].DoorzoURL; dz != "" {
-		if want := "https://www.doorzo.com/en/mall/yahoo/detail/"; len(dz) <= len(want) || dz[:len(want)] != want {
-			t.Errorf("yahoo doorzo url = %q", dz)
-		}
+	if by := bySource["yahooauctions"].BuyeeURL; by != "https://buyee.jp/item/yahoo/auction/1238998047" {
+		t.Errorf("yahoo should expose a buyee url instead of doorzo, got %q", by)
+	}
+	if bySource["mercari"].BuyeeURL != "" {
+		t.Error("mercari has no buyee item path and must not expose one")
 	}
 	if dz := bySource["paypayfleamarket"].DoorzoURL; dz != "" {
 		if want := "https://www.doorzo.com/en/mall/paypay/detail/"; len(dz) <= len(want) || dz[:len(want)] != want {
@@ -124,10 +125,67 @@ func TestListingViewIncludesDoorzoURL(t *testing.T) {
 	if len(views) != 1 {
 		t.Fatalf("got %d views", len(views))
 	}
-	if views[0].DoorzoURL == "" {
-		t.Fatal("a yahoo listing should expose a doorzo url in the feed")
+	if views[0].DoorzoURL != "" {
+		t.Errorf("doorzo does not support yahoo auctions, got %q", views[0].DoorzoURL)
 	}
-	if !strings.HasPrefix(views[0].DoorzoURL, "https://www.doorzo.com/en/mall/yahoo/detail/") {
-		t.Errorf("doorzo url = %q", views[0].DoorzoURL)
+	if views[0].BuyeeURL != "https://buyee.jp/item/yahoo/auction/1238998047" {
+		t.Errorf("buyee url = %q", views[0].BuyeeURL)
+	}
+}
+
+func TestYahooAndPayPaySupportCategoryFilter(t *testing.T) {
+	for _, id := range []string{"yahooauctions", "paypayfleamarket", "mercari", "rakuma", "ebay"} {
+		if !source.SupportsCategoryFilter(id) {
+			t.Errorf("%s should be reported as supporting category exclusion", id)
+		}
+	}
+	for _, id := range []string{"shpock", "vinted", "snkrdunk", "surugaya"} {
+		if source.SupportsCategoryFilter(id) {
+			t.Errorf("%s does not expose categories and must not claim support", id)
+		}
+	}
+}
+
+func TestBuyeeURLOnlyForYahoo(t *testing.T) {
+	if got := source.BuyeeURL("yahooauctions", "1238998047"); got != "https://buyee.jp/item/yahoo/auction/1238998047" {
+		t.Errorf("yahoo buyee url = %q", got)
+	}
+	for _, id := range []string{"mercari", "paypayfleamarket", "rakuma", "ebay"} {
+		if got := source.BuyeeURL(id, "x1"); got != "" {
+			t.Errorf("%s must not get a buyee url, got %q", id, got)
+		}
+	}
+	if got := source.BuyeeURL("yahooauctions", ""); got != "" {
+		t.Error("a blank external id must not produce a buyee url")
+	}
+}
+
+func TestDoorzoNoLongerClaimsYahoo(t *testing.T) {
+	if got := source.DoorzoURL("yahooauctions", "https://auctions.yahoo.co.jp/jp/auction/k1", "k1"); got != "" {
+		t.Errorf("doorzo does not support yahoo auctions, got %q", got)
+	}
+	if got := source.DoorzoURL("paypayfleamarket", "", "z1"); got == "" {
+		t.Error("paypay should still get a doorzo url")
+	}
+}
+
+func TestCardLayoutElementsRender(t *testing.T) {
+	e := newPatchEnv(t)
+	req, _ := http.NewRequest(http.MethodGet, e.ts.URL+"/", nil)
+	req.AddCookie(e.session)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	body := string(raw)
+	for _, want := range []string{
+		".card .aucrow", ".card .cardmeta", "function copyLink",
+		"item.buyeeUrl", "'cardbtn','buyee'", "PayPay Flea Market and Yahoo! Auctions",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard is missing %q", want)
+		}
 	}
 }

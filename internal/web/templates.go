@@ -18,7 +18,9 @@ const pageTemplate = `<!doctype html>
   .card .noimg { width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; background: #8882; color: #8889; font-size: .8rem; }
   .card .body { padding: .5rem .7rem; display: flex; flex-direction: column; flex: 1 1 auto; }
   .card .cardacts { margin-top: auto; padding-top: .4rem; display: flex; gap: .3rem; flex-wrap: wrap; }
-  .card .title { font-size: .9rem; display: block; max-height: 3.2em; overflow: hidden; }
+  .card .title { font-size: .9rem; display: block; height: 2.7em; line-height: 1.35; overflow: hidden; }
+  .card .aucrow { height: 22px; min-height: 22px; display: flex; align-items: center; overflow: hidden; font-size: .8rem; }
+  .card .cardmeta { height: 2.4em; overflow: hidden; line-height: 1.2; }
   .muted { color: #8889; font-size: .8rem; }
   .approx { color: #8889; font-size: .8rem; }
   .pill { font-size: .7rem; padding: .1rem .4rem; border-radius: 999px; border: 1px solid #8886; }
@@ -211,10 +213,10 @@ const pageTemplate = `<!doctype html>
     <p class="muted">Pausing a source stops every search on it from running, without changing each
       search's own pause state — unpausing brings back exactly the searches that were running before.</p>
     <p class="muted">Applied to every search on that source, on top of the search's own exclusions.
-      Category ids work on mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty and rakuma —
-      each find's id is shown on its card. On mercari, ebay, willhaben and rakuma a parent id also
-      excludes its children (rakuma: 10005 = メンズ); craigslist, jmty and kleinanzeigen match exact
-      ids only.</p>
+      Category ids work on mercari, ebay, willhaben, kleinanzeigen, bazar, craigslist, jmty, rakuma,
+      PayPay Flea Market and Yahoo! Auctions — each find's id is shown on its card. On mercari, ebay,
+      willhaben, rakuma, PayPay and Yahoo! Auctions a parent id also excludes its children
+      (rakuma: 10005 = メンズ); craigslist, jmty and kleinanzeigen match exact ids only.</p>
     <table>
       <thead><tr><th>Source</th><th>Paused</th><th>Exclude keywords</th><th>Exclude category ids</th><th></th></tr></thead>
       <tbody id="srcex"></tbody>
@@ -1030,11 +1032,11 @@ const pageTemplate = `<!doctype html>
       }
     }
 
-    function card(item, noThumb) {
+    function card(item, isHidden, noThumb) {
       var c = el('div', 'card');
       var a = el('a'); a.href=item.url; a.target='_blank'; a.rel='noopener';
       if (noThumb) {
-        a.appendChild(el('div','noimg','hidden'));
+        a.appendChild(el('div','noimg','thumbnail off'));
       } else if (item.imageUrl) {
         var img = el('img'); img.src='/img?u='+encodeURIComponent(item.imageUrl); img.loading='lazy'; img.alt='';
         img.dataset.tries = '0';
@@ -1051,23 +1053,30 @@ const pageTemplate = `<!doctype html>
       c.appendChild(a);
       var body = el('div','body');
       var title = el('a','title'); title.href=item.url; title.target='_blank'; title.rel='noopener'; title.textContent=item.title;
+      title.title = item.title;
       body.appendChild(title);
+
+      var auc = el('div','aucrow');
       if (item.saleType === 'auction') {
-        var ap=el('span','pill','auction'); ap.style.marginRight='.3rem'; body.appendChild(ap);
+        var ap=el('span','pill','auction'); ap.style.marginRight='.3rem'; auc.appendChild(ap);
         var tl = timeLeft(item.ends);
-        if (tl) { var ts=el('span','muted',tl); ts.style.fontSize='.75rem'; ts.title = endDateLabel(item.ends); body.appendChild(ts); }
+        if (tl) { var ts=el('span','muted',tl); ts.style.fontSize='.75rem'; ts.title = endDateLabel(item.ends); auc.appendChild(ts); }
       }
+      body.appendChild(auc);
+
       var price = el('div','muted'); price.textContent = item.price || '';
       if (item.priceApprox) { var ap=el('span','approx','  '+item.priceApprox); price.appendChild(ap); }
       body.appendChild(price);
       var label = sourceName(item.source) + (item.searchId ? ' #' + item.searchId : '') +
         (item.category ? ' · cat ' + item.category : '');
-      body.appendChild(el('div','muted', label + ' · ' + item.seen));
+      var meta = el('div','cardmeta muted', label + ' · ' + item.seen);
+      meta.title = label + ' · ' + item.seen;
+      body.appendChild(meta);
       var acts = el('div','cardacts');
-      var hb = el('button','cardbtn', noThumb ? '\u{1F441}' : '\u{1F441}\u{200D}\u{1F5E8}');
+      var hb = el('button','cardbtn', isHidden ? '\u{1F441}' : '\u{1F441}\u{200D}\u{1F5E8}');
       hb.type='button';
-      hb.title = noThumb ? 'Unhide — show this in the feed again' : 'Hide this find from the feed';
-      hb.onclick = function(){ hideItem(item, hb, !noThumb); };
+      hb.title = isHidden ? 'Unhide — show this in the feed again' : 'Hide this find from the feed';
+      hb.onclick = function(){ hideItem(item, hb, !isHidden); };
       acts.appendChild(hb);
       var mon = el('button','cardbtn','monitor'); mon.type='button';
       mon.onclick = function(){ monitorItem(item, mon); };
@@ -1078,9 +1087,42 @@ const pageTemplate = `<!doctype html>
         dz.onclick = function(){ window.open(item.doorzoUrl, '_blank', 'noopener'); };
         acts.appendChild(dz);
       }
+      if (item.buyeeUrl) {
+        var by = el('button','cardbtn','buyee'); by.type='button';
+        by.title = 'Buy via the Buyee proxy service';
+        by.onclick = function(){ window.open(item.buyeeUrl, '_blank', 'noopener'); };
+        acts.appendChild(by);
+      }
+      var cp = el('button','cardbtn','\u{1F517}'); cp.type='button';
+      cp.title = 'Copy the item link';
+      cp.onclick = function(){ copyLink(item.url, cp); };
+      acts.appendChild(cp);
       body.appendChild(acts);
       c.appendChild(body);
       return c;
+    }
+
+    function copyLink(url, btn) {
+      if (!url) return;
+      var done = function(ok){
+        var prev = btn.textContent;
+        btn.textContent = ok ? '\u2713' : '\u2717';
+        setTimeout(function(){ btn.textContent = prev; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function(){ done(true); }, function(){ done(false); });
+        return;
+      }
+      var ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      done(ok);
     }
 
     function hideItem(item, btn, hide) {
@@ -1116,7 +1158,7 @@ const pageTemplate = `<!doctype html>
     function renderFeed(list, total, page, pages) {
       feedPage = page;
       var feed = document.getElementById('feed');
-      feed.replaceChildren.apply(feed, list.map(function(item){ return card(item, false); }));
+      feed.replaceChildren.apply(feed, list.map(function(item){ return card(item, false, false); }));
       document.getElementById('feed-empty').style.display = total ? 'none' : '';
       document.getElementById('feed-status').textContent =
         '· ' + total + (feedFilter ? ' matching' : '') + ' · updated ' + new Date().toLocaleTimeString();
@@ -1143,7 +1185,7 @@ const pageTemplate = `<!doctype html>
       document.getElementById('hidden-wrap').style.display = hiddenOpen ? '' : 'none';
       var box = document.getElementById('hidden-feed');
       if (!hiddenOpen) { box.replaceChildren(); return; }
-      box.replaceChildren.apply(box, (list || []).map(function(item){ return card(item, !hiddenThumbs); }));
+      box.replaceChildren.apply(box, (list || []).map(function(item){ return card(item, true, !hiddenThumbs); }));
       document.getElementById('hidden-pageinfo').textContent = 'page ' + page + ' / ' + pages;
       document.getElementById('hidden-prev').disabled = page <= 1;
       document.getElementById('hidden-next').disabled = page >= pages;

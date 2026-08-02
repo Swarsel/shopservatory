@@ -330,14 +330,16 @@ func anyCategoryExcluded(spec SearchSpec, categories []string) bool {
 }
 
 var categoryFilterSources = map[string]bool{
-	"mercari":       true,
-	"ebay":          true,
-	"willhaben":     true,
-	"kleinanzeigen": true,
-	"bazar":         true,
-	"craigslist":    true,
-	"jmty":          true,
-	"rakuma":        true,
+	"mercari":          true,
+	"ebay":             true,
+	"willhaben":        true,
+	"kleinanzeigen":    true,
+	"bazar":            true,
+	"craigslist":       true,
+	"jmty":             true,
+	"rakuma":           true,
+	"paypayfleamarket": true,
+	"yahooauctions":    true,
 }
 
 func SupportsCategoryFilter(sourceID string) bool {

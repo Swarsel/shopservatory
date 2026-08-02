@@ -117,6 +117,9 @@ func (t *Telegram) format(ev Event) string {
 	if dz := source.DoorzoURL(ev.Listing.Source, ev.Listing.URL, ev.Listing.ExternalID); dz != "" {
 		fmt.Fprintf(&b, "🛫 <a href=\"%s\">buy via Doorzo</a>\n", html.EscapeString(dz))
 	}
+	if by := source.BuyeeURL(ev.Listing.Source, ev.Listing.ExternalID); by != "" {
+		fmt.Fprintf(&b, "🛫 <a href=\"%s\">buy via Buyee</a>\n", html.EscapeString(by))
+	}
 	if ev.Note != "" {
 		fmt.Fprintf(&b, "%s", html.EscapeString(ev.Note))
 		return b.String()
