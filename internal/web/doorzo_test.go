@@ -183,9 +183,59 @@ func TestCardLayoutElementsRender(t *testing.T) {
 	for _, want := range []string{
 		".card .aucrow", ".card .cardmeta", "function copyLink",
 		"item.buyeeUrl", "'cardbtn','buyee'", "PayPay Flea Market and Yahoo! Auctions",
+		"m.doorzoUrl || m.buyeeUrl",
+		"open in buyee",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard is missing %q", want)
 		}
+	}
+}
+
+func TestMonitorViewYahooGetsBuyeeNotDoorzo(t *testing.T) {
+	e := newPatchEnv(t)
+	ctx := context.Background()
+	u, _ := e.st.UserByEmail(ctx, "leon@example.com")
+
+	for _, m := range []store.MonitoredItem{
+		{UserID: u.ID, Source: "yahooauctions", ExternalID: "1238998047",
+			URL: "https://auctions.yahoo.co.jp/jp/auction/1238998047"},
+		{UserID: u.ID, Source: "paypayfleamarket", ExternalID: "z651582616",
+			URL: "https://buyee.jp/paypayfleamarket/item/z651582616"},
+		{UserID: u.ID, Source: "ebay", ExternalID: "e1", URL: "https://ebay.com/itm/e1"},
+	} {
+		m.Title, m.Interval, m.Enabled, m.Status = "t", time.Hour, true, "active"
+		if _, err := e.st.AddMonitor(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	views, err := e.srv.monitorViews(ctx, u.ID, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]monitorView{}
+	for _, v := range views {
+		by[v.Source] = v
+	}
+
+	y := by["yahooauctions"]
+	if y.DoorzoURL != "" {
+		t.Errorf("yahoo monitor must not offer doorzo, got %q", y.DoorzoURL)
+	}
+	if y.BuyeeURL != "https://buyee.jp/item/yahoo/auction/1238998047" {
+		t.Errorf("yahoo monitor buyee url = %q", y.BuyeeURL)
+	}
+
+	p := by["paypayfleamarket"]
+	if p.DoorzoURL == "" {
+		t.Error("paypay monitor should still offer doorzo")
+	}
+	if p.BuyeeURL != "" {
+		t.Errorf("paypay has no buyee item path, got %q", p.BuyeeURL)
+	}
+
+	if eb := by["ebay"]; eb.DoorzoURL != "" || eb.BuyeeURL != "" {
+		t.Errorf("ebay should offer neither proxy, got doorzo=%q buyee=%q", eb.DoorzoURL, eb.BuyeeURL)
 	}
 }

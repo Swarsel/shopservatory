@@ -1004,13 +1004,20 @@ const pageTemplate = `<!doctype html>
         act.appendChild(btn('archive', function(){ action('/monitors/'+m.id+'/archive'); }));
         act.appendChild(btn('delete', function(){ if(confirm('Stop monitoring “' + (m.title || m.url) + '”?')) action('/monitors/'+m.id+'/delete'); }));
       }
-      if (m.doorzoUrl) {
-        var dzRow = el('div');
-        dzRow.style.marginTop = '.3rem';
-        var dzb = btn('open in doorzo', function(){ window.open(m.doorzoUrl, '_blank', 'noopener'); });
-        dzb.title = 'Buy via the Doorzo proxy service';
-        dzRow.appendChild(dzb);
-        act.appendChild(dzRow);
+      if (m.doorzoUrl || m.buyeeUrl) {
+        var proxyRow = el('div');
+        proxyRow.style.marginTop = '.3rem';
+        if (m.doorzoUrl) {
+          var dzb = btn('open in doorzo', function(){ window.open(m.doorzoUrl, '_blank', 'noopener'); });
+          dzb.title = 'Buy via the Doorzo proxy service';
+          proxyRow.appendChild(dzb);
+        }
+        if (m.buyeeUrl) {
+          var byb = btn('open in buyee', function(){ window.open(m.buyeeUrl, '_blank', 'noopener'); });
+          byb.title = 'Buy via the Buyee proxy service';
+          proxyRow.appendChild(byb);
+        }
+        act.appendChild(proxyRow);
       }
       tr.appendChild(act); tb.appendChild(tr);
 

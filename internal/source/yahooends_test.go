@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -269,5 +270,39 @@ func TestYahooEnrichWorksWithCategoriesButNoEndTime(t *testing.T) {
 	}
 	if extra["categories"] != "25464" {
 		t.Errorf("categories = %q", extra["categories"])
+	}
+}
+
+const yahooList5HTML = `<html><head>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[
+{"@type":"ListItem","position":1,"item":{"@id":"https://auctions.yahoo.co.jp/","name":"top"}},
+{"@type":"ListItem","position":2,"item":{"@id":"https://auctions.yahoo.co.jp/list5/2084043920-category.html","name":"tickets"}},
+{"@type":"ListItem","position":3,"item":{"@id":"https://auctions.yahoo.co.jp/list5/2084007688-category.html","name":"prepaid"}},
+{"@type":"ListItem","position":4,"item":{"@id":"https://auctions.yahoo.co.jp/category/list/2084007698","name":"bus card"}}]}</script>
+</head><body></body></html>`
+
+func TestYahooCategoryChainAcceptsAnyListDepth(t *testing.T) {
+	got := yahooCategoryChain([]byte(yahooList5HTML))
+	want := []string{"2084043920", "2084007688", "2084007698"}
+	if len(got) != len(want) {
+		t.Fatalf("list5 breadcrumbs must all parse: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestYahooCategoryChainHandlesMixedListPaths(t *testing.T) {
+	mixed := `<html><head><script type="application/ld+json">{"@type":"BreadcrumbList","itemListElement":[
+	{"@type":"ListItem","position":1,"item":{"@id":"https://auctions.yahoo.co.jp/list4/25464-category.html"}},
+	{"@type":"ListItem","position":2,"item":{"@id":"https://auctions.yahoo.co.jp/list5/2084007688-category.html"}},
+	{"@type":"ListItem","position":3,"item":{"@id":"https://auctions.yahoo.co.jp/list/12345-category.html"}},
+	{"@type":"ListItem","position":4,"item":{"@id":"https://auctions.yahoo.co.jp/category/list/999"}}]}</script></head></html>`
+	got := yahooCategoryChain([]byte(mixed))
+	want := "25464,2084007688,12345,999"
+	if strings.Join(got, ",") != want {
+		t.Errorf("chain = %q want %q", strings.Join(got, ","), want)
 	}
 }

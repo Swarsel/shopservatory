@@ -226,7 +226,7 @@ func (y *yahooAuctions) EnrichListing(ctx context.Context, externalID string) (f
 	return 0, "auction", extra, true
 }
 
-var yahooCategoryID = regexp.MustCompile(`auctions\.yahoo\.co\.jp/(?:list4/(\d+)-category\.html|category/list/(\d+))`)
+var yahooCategoryID = regexp.MustCompile(`auctions\.yahoo\.co\.jp/(?:list\d*/(\d+)-category\.html|category/list/(\d+))`)
 
 func yahooCategoryChain(body []byte) []string {
 	var out []string
