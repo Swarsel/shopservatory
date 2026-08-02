@@ -31,6 +31,7 @@ type Server struct {
 	loginTmpl   *template.Template
 	images      *http.Client
 	imagesProxy *http.Client
+	imagesJP    *http.Client
 
 	searchInterval  time.Duration
 	monitorInterval time.Duration
@@ -71,14 +72,27 @@ func imageClient(proxyURL string) *http.Client {
 
 var proxiedImageHosts = []string{"jmty.jp"}
 
-func proxiedImageHost(host string) bool {
+var jpImageHosts = []string{"yimg.jp", "yahoo.co.jp"}
+
+func hostMatches(host string, suffixes []string) bool {
 	host = strings.ToLower(host)
-	for _, suffix := range proxiedImageHosts {
+	for _, suffix := range suffixes {
 		if host == suffix || strings.HasSuffix(host, "."+suffix) {
 			return true
 		}
 	}
 	return false
+}
+
+func proxiedImageHost(host string) bool { return hostMatches(host, proxiedImageHosts) }
+
+func jpImageHost(host string) bool { return hostMatches(host, jpImageHosts) }
+
+func (s *Server) SetJPImageProxy(proxyURL string) {
+	if proxyURL == "" {
+		return
+	}
+	s.imagesJP = imageClient(proxyURL)
 }
 
 func (s *Server) searchDefault(ctx context.Context, userID int64) time.Duration {
@@ -616,7 +630,10 @@ func (s *Server) fetchImage(r *http.Request, target string) (*http.Response, err
 		client := s.images
 		if u, uErr := url.Parse(target); uErr == nil {
 			req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
-			if proxiedImageHost(u.Hostname()) {
+			switch {
+			case s.imagesJP != nil && jpImageHost(u.Hostname()):
+				client = s.imagesJP
+			case proxiedImageHost(u.Hostname()):
 				client = s.imagesProxy
 			}
 		}
