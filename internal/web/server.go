@@ -365,6 +365,8 @@ type stateData struct {
 	ListingsPages int             `json:"listingsPages"`
 	Hidden        []listingView   `json:"hidden,omitempty"`
 	HiddenTotal   int             `json:"hiddenTotal"`
+	HiddenPage    int             `json:"hiddenPage"`
+	HiddenPages   int             `json:"hiddenPages"`
 	Monitors      []monitorView   `json:"monitors"`
 	Settings      settingsView    `json:"settings"`
 	Me            meView          `json:"me"`
@@ -429,13 +431,36 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var hiddenViews []listingView
-	hiddenTotal := 0
+	hiddenTotal, hiddenPage, hiddenPages := 0, 1, 1
 	if r.URL.Query().Get("hidden") == "1" {
-		if list, total, err := s.store.HiddenListingsPage(r.Context(), userID, pageSize, 0); err == nil {
+		hq := strings.TrimSpace(r.URL.Query().Get("hq"))
+		var hSources []string
+		if hq != "" {
+			needle := strings.ToLower(hq)
+			for _, src := range s.registry.All() {
+				if strings.Contains(strings.ToLower(src.DisplayName()), needle) {
+					hSources = append(hSources, src.ID())
+				}
+			}
+		}
+		hiddenPage = 1
+		if v, err := strconv.Atoi(r.URL.Query().Get("hpage")); err == nil && v > 0 {
+			hiddenPage = v
+		}
+		list, total, err := s.store.HiddenListingsPage(r.Context(), userID, hq, hSources, pageSize, (hiddenPage-1)*pageSize)
+		if err == nil {
+			hiddenPages = (total + pageSize - 1) / pageSize
+			if hiddenPages < 1 {
+				hiddenPages = 1
+			}
+			if hiddenPage > hiddenPages {
+				hiddenPage = hiddenPages
+				list, total, _ = s.store.HiddenListingsPage(r.Context(), userID, hq, hSources, pageSize, (hiddenPage-1)*pageSize)
+			}
 			hiddenViews = s.listingViews(list, target)
 			hiddenTotal = total
 		}
-	} else if _, total, err := s.store.HiddenListingsPage(r.Context(), userID, 1, 0); err == nil {
+	} else if _, total, err := s.store.HiddenListingsPage(r.Context(), userID, "", nil, 1, 0); err == nil {
 		hiddenTotal = total
 	}
 
@@ -466,6 +491,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		Searches: searches, Listings: s.listingViews(listings, target),
 		ListingsTotal: total, ListingsPage: page, ListingsPages: pages,
 		Hidden: hiddenViews, HiddenTotal: hiddenTotal,
+		HiddenPage: hiddenPage, HiddenPages: hiddenPages,
 		Monitors: monitors, Me: me, Users: users, Settings: settingsView{
 			Currency:        settings.Currency,
 			SearchInterval:  durStr(settings.SearchInterval),

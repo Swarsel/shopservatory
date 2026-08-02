@@ -12,11 +12,12 @@ const pageTemplate = `<!doctype html>
   h1 { margin-top: 0; } h2 { margin-top: 2rem; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #8884; vertical-align: top; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
-  .card { border: 1px solid #8884; border-radius: 8px; overflow: hidden; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; align-items: stretch; }
+  .card { border: 1px solid #8884; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
   .card img { width: 100%; height: 150px; object-fit: cover; background: #8882; display: block; }
   .card .noimg { width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; background: #8882; color: #8889; font-size: .8rem; }
-  .card .body { padding: .5rem .7rem; }
+  .card .body { padding: .5rem .7rem; display: flex; flex-direction: column; flex: 1 1 auto; }
+  .card .cardacts { margin-top: auto; padding-top: .4rem; display: flex; gap: .3rem; flex-wrap: wrap; }
   .card .title { font-size: .9rem; display: block; max-height: 3.2em; overflow: hidden; }
   .muted { color: #8889; font-size: .8rem; }
   .approx { color: #8889; font-size: .8rem; }
@@ -24,7 +25,7 @@ const pageTemplate = `<!doctype html>
   fieldset { border: 1px solid #8884; border-radius: 8px; }
   label { display: block; margin: .4rem 0 .1rem; font-size: .85rem; }
   input, select, textarea { width: 100%; padding: .35rem; box-sizing: border-box; }
-  textarea.autogrow { resize: vertical; overflow: hidden; min-height: 0; line-height: 1.45; font-family: inherit; }
+  textarea.autogrow { resize: vertical; overflow: hidden; min-height: 0; line-height: normal; font: inherit; border-width: 2px; border-style: inset; }
   .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: .6rem; }
   .row3 { grid-template-columns: repeat(3, 1fr); }
   @media (max-width: 640px) { .row, .row3 { grid-template-columns: 1fr; } }
@@ -44,7 +45,7 @@ const pageTemplate = `<!doctype html>
   .expander { background: none; border: none; cursor: pointer; font-size: .9rem; padding: 0 .3rem; }
   .grouprow > td { background: #ffffff08; }
   .childrow > td:nth-child(3) { padding-left: 1.4rem; }
-  .cardbtn { margin-top: .4rem; font-size: .75rem; }
+  .cardbtn { font-size: .75rem; }
   .mthumb { width: 32px; height: 32px; object-fit: cover; vertical-align: middle; margin-right: .45rem; border-radius: 3px; }
   td .title { vertical-align: middle; }
   .status-active { color: #3a3; } .status-sold { color: #c44; } .status-removed { color: #888; }
@@ -87,7 +88,7 @@ const pageTemplate = `<!doctype html>
       </div>
       <div class="row">
         <div><label>Interval</label><input name="interval" id="f-interval" placeholder="default (e.g. 5m, 1h)"></div>
-        <div><label>Params (key=value per line)</label><textarea name="params" id="f-params" class="autogrow" rows="1" placeholder="sort=newlyListed"></textarea></div>
+        <div><label>Params (key=value per line)</label><textarea name="params" id="f-params" class="autogrow" rows="1" data-size-ref="f-interval" placeholder="sort=newlyListed"></textarea></div>
       </div>
       <p>
         <button type="submit" id="f-submit">Add search</button>
@@ -132,7 +133,7 @@ const pageTemplate = `<!doctype html>
       <label>Params (key=value per line) <span class="muted">(tick to apply; in merge mode an empty value removes a key)</span></label>
       <div class="feedbar" style="align-items:flex-start">
         <input type="checkbox" id="be-params-on">
-        <textarea id="be-params" class="autogrow" rows="1" placeholder="sort=newlyListed"></textarea>
+        <textarea id="be-params" class="autogrow" rows="1" data-size-ref="be-interval" placeholder="sort=newlyListed"></textarea>
         <select id="be-params-mode">
           <option value="merge">merge with existing</option>
           <option value="replace">replace all params</option>
@@ -268,7 +269,14 @@ const pageTemplate = `<!doctype html>
   </div>
   <h3 class="fold-h" id="hidden-head" style="display:none">▸ Hidden finds</h3>
   <div id="hidden-wrap" style="display:none">
-    <p class="muted">These are kept out of the feed and out of filtering. Thumbnails load only while this section is open.</p>
+    <p class="muted">Kept out of the feed and out of its filtering. Use the eye button to bring one back.</p>
+    <div class="feedbar">
+      <input id="hidden-filter" placeholder="search hidden…" autocomplete="off">
+      <button type="button" id="hidden-thumbs">Load thumbnails</button>
+      <button type="button" id="hidden-prev">‹ prev</button>
+      <span class="muted" id="hidden-pageinfo"></span>
+      <button type="button" id="hidden-next">next ›</button>
+    </div>
     <div class="grid" id="hidden-feed"></div>
   </div>
 
@@ -340,7 +348,13 @@ const pageTemplate = `<!doctype html>
     function autoGrow(ta) {
       if (!ta) return;
       ta.style.height = 'auto';
-      ta.style.height = (ta.scrollHeight + 2) + 'px';
+      var sh = ta.scrollHeight;
+      var ref = ta.dataset.sizeRef ? document.getElementById(ta.dataset.sizeRef) : null;
+      if (ref && ta.value.indexOf('\n') === -1) {
+        ta.style.height = ref.getBoundingClientRect().height + 'px';
+      } else {
+        ta.style.height = sh + 'px';
+      }
     }
     function initAutoGrow() {
       Array.prototype.forEach.call(document.querySelectorAll('textarea.autogrow'), function(ta){
@@ -1049,22 +1063,22 @@ const pageTemplate = `<!doctype html>
       var label = sourceName(item.source) + (item.searchId ? ' #' + item.searchId : '') +
         (item.category ? ' · cat ' + item.category : '');
       body.appendChild(el('div','muted', label + ' · ' + item.seen));
-      var mon = el('button','cardbtn','monitor'); mon.type='button';
-      mon.onclick = function(){ monitorItem(item, mon); };
-      body.appendChild(mon);
-      if (item.doorzoUrl) {
-        var dz = el('button','cardbtn','doorzo'); dz.type='button';
-        dz.style.marginLeft = '.3rem';
-        dz.title = 'Buy via the Doorzo proxy service';
-        dz.onclick = function(){ window.open(item.doorzoUrl, '_blank', 'noopener'); };
-        body.appendChild(dz);
-      }
+      var acts = el('div','cardacts');
       var hb = el('button','cardbtn', noThumb ? '\u{1F441}' : '\u{1F441}\u{200D}\u{1F5E8}');
       hb.type='button';
-      hb.style.marginLeft = '.3rem';
       hb.title = noThumb ? 'Unhide — show this in the feed again' : 'Hide this find from the feed';
       hb.onclick = function(){ hideItem(item, hb, !noThumb); };
-      body.appendChild(hb);
+      acts.appendChild(hb);
+      var mon = el('button','cardbtn','monitor'); mon.type='button';
+      mon.onclick = function(){ monitorItem(item, mon); };
+      acts.appendChild(mon);
+      if (item.doorzoUrl) {
+        var dz = el('button','cardbtn','doorzo'); dz.type='button';
+        dz.title = 'Buy via the Doorzo proxy service';
+        dz.onclick = function(){ window.open(item.doorzoUrl, '_blank', 'noopener'); };
+        acts.appendChild(dz);
+      }
+      body.appendChild(acts);
       c.appendChild(body);
       return c;
     }
@@ -1116,26 +1130,59 @@ const pageTemplate = `<!doctype html>
     }
 
     var hiddenOpen = false;
-    function renderHidden(list, total) {
+    var hiddenPage = 1;
+    var hiddenFilter = '';
+    var hiddenThumbs = false;
+
+    function renderHidden(list, total, page, pages) {
+      hiddenPage = page;
       var head = document.getElementById('hidden-head');
-      head.style.display = total ? '' : 'none';
+      var show = total > 0 || hiddenFilter !== '';
+      head.style.display = (show || hiddenOpen) ? '' : 'none';
       head.textContent = (hiddenOpen ? '▾' : '▸') + ' Hidden finds (' + total + ')';
-      document.getElementById('hidden-wrap').style.display = total && hiddenOpen ? '' : 'none';
+      document.getElementById('hidden-wrap').style.display = hiddenOpen ? '' : 'none';
       var box = document.getElementById('hidden-feed');
       if (!hiddenOpen) { box.replaceChildren(); return; }
-      box.replaceChildren.apply(box, (list || []).map(function(item){ return card(item, true); }));
+      box.replaceChildren.apply(box, (list || []).map(function(item){ return card(item, !hiddenThumbs); }));
+      document.getElementById('hidden-pageinfo').textContent = 'page ' + page + ' / ' + pages;
+      document.getElementById('hidden-prev').disabled = page <= 1;
+      document.getElementById('hidden-next').disabled = page >= pages;
+      document.getElementById('hidden-thumbs').textContent =
+        hiddenThumbs ? 'Hide thumbnails' : 'Load thumbnails';
     }
 
     document.getElementById('hidden-head').onclick = function(){
       hiddenOpen = !hiddenOpen;
       refresh();
     };
+    document.getElementById('hidden-thumbs').onclick = function(){
+      hiddenThumbs = !hiddenThumbs;
+      refresh();
+    };
+    document.getElementById('hidden-prev').onclick = function(){
+      if (hiddenPage > 1) { hiddenPage--; refresh(); }
+    };
+    document.getElementById('hidden-next').onclick = function(){
+      hiddenPage++; refresh();
+    };
+    var hiddenFilterTimer = null;
+    document.getElementById('hidden-filter').addEventListener('input', function(e){
+      var v = e.target.value.trim();
+      clearTimeout(hiddenFilterTimer);
+      hiddenFilterTimer = setTimeout(function(){
+        hiddenFilter = v; hiddenPage = 1; refresh();
+      }, 300);
+    });
 
     function refresh() {
       var params = new URLSearchParams();
       params.set('page', feedPage);
       if (feedFilter) params.set('q', feedFilter);
-      if (hiddenOpen) params.set('hidden', '1');
+      if (hiddenOpen) {
+        params.set('hidden', '1');
+        params.set('hpage', hiddenPage);
+        if (hiddenFilter) params.set('hq', hiddenFilter);
+      }
       return fetch('/api/state?' + params.toString(), {headers:{'Accept':'application/json'}})
         .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
         .then(function(s){
@@ -1144,7 +1191,7 @@ const pageTemplate = `<!doctype html>
           Object.keys(ex).forEach(function(id){ if (ex[id].paused) pausedSources[id] = true; });
           renderSearches(s.searches||[]); renderMonitors(s.monitors||[]);
           renderFeed(s.listings||[], s.listingsTotal||0, s.listingsPage||1, s.listingsPages||1);
-          renderHidden(s.hidden||[], s.hiddenTotal||0);
+          renderHidden(s.hidden||[], s.hiddenTotal||0, s.hiddenPage||1, s.hiddenPages||1);
           renderSettings(s.settings||{}); renderMe(s.me||{}); renderUsers(s.users||[]);
         })
         .catch(function(){});

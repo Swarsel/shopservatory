@@ -210,11 +210,43 @@ func (y *yahooAuctions) EnrichListing(ctx context.Context, externalID string) (f
 	if err != nil {
 		return 0, "", nil, false
 	}
-	ends, ok := yahooEndTime(body)
-	if !ok {
+	ends, hasEnds := yahooEndTime(body)
+	cats := yahooCategoryChain(body)
+	if !hasEnds && len(cats) == 0 {
 		return 0, "", nil, false
 	}
-	return 0, "auction", map[string]string{"ends": ends.UTC().Format(time.RFC3339)}, true
+	extra := map[string]string{}
+	if hasEnds {
+		extra["ends"] = ends.UTC().Format(time.RFC3339)
+	}
+	if len(cats) > 0 {
+		extra["category"] = cats[len(cats)-1]
+		extra["categories"] = strings.Join(cats, ",")
+	}
+	return 0, "auction", extra, true
+}
+
+var yahooCategoryID = regexp.MustCompile(`auctions\.yahoo\.co\.jp/(?:list4/(\d+)-category\.html|category/list/(\d+))`)
+
+func yahooCategoryChain(body []byte) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range breadcrumbItemURLs(body) {
+		m := yahooCategoryID.FindStringSubmatch(raw)
+		if m == nil {
+			continue
+		}
+		id := m[1]
+		if id == "" {
+			id = m[2]
+		}
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func (y *yahooAuctions) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -203,10 +204,13 @@ func TestParamsTextareasAutoGrow(t *testing.T) {
 
 	for _, want := range []string{
 		`textarea.autogrow`,
-		`id="f-params" class="autogrow" rows="1"`,
-		`id="be-params" class="autogrow" rows="1"`,
+		`id="f-params" class="autogrow" rows="1" data-size-ref="f-interval"`,
+		`id="be-params" class="autogrow" rows="1" data-size-ref="be-interval"`,
 		"function autoGrow",
 		"initAutoGrow()",
+		"line-height: normal",
+		"border-width: 2px",
+		"dataset.sizeRef",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard is missing %q", want)
@@ -214,5 +218,101 @@ func TestParamsTextareasAutoGrow(t *testing.T) {
 	}
 	if strings.Contains(body, `id="f-params" rows="2"`) {
 		t.Error("the params field should no longer be a fixed two-row box")
+	}
+}
+
+func TestHiddenSectionPaginatesAndSearches(t *testing.T) {
+	e := newPatchEnv(t)
+	ctx := context.Background()
+	u, _ := e.st.UserByEmail(ctx, "leon@example.com")
+	sid, err := e.st.CreateSearch(ctx, store.Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 150; i++ {
+		title := "plain item"
+		if i%3 == 0 {
+			title = "pikachu special"
+		}
+		if _, _, err := e.st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: fmt.Sprintf("h%03d", i), Title: fmt.Sprintf("%s %d", title, i),
+			Price: float64(100 + i), Currency: "JPY", URL: fmt.Sprintf("https://e/%d", i),
+		}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.st.SetListingHidden(ctx, u.ID, "mercari", fmt.Sprintf("h%03d", i), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st := e.stateWith(t, "hidden=1&hpage=1")
+	if tot := int(st["hiddenTotal"].(float64)); tot != 150 {
+		t.Fatalf("hiddenTotal = %d want 150", tot)
+	}
+	if n := len(st["hidden"].([]any)); n != 100 {
+		t.Fatalf("page 1 should hold 100 hidden items, got %d", n)
+	}
+	if p := int(st["hiddenPages"].(float64)); p != 2 {
+		t.Errorf("hiddenPages = %d want 2", p)
+	}
+
+	st = e.stateWith(t, "hidden=1&hpage=2")
+	if n := len(st["hidden"].([]any)); n != 50 {
+		t.Fatalf("page 2 should hold the remaining 50, got %d", n)
+	}
+	if p := int(st["hiddenPage"].(float64)); p != 2 {
+		t.Errorf("hiddenPage = %d want 2", p)
+	}
+
+	st = e.stateWith(t, "hidden=1&hpage=1&hq=pikachu")
+	tot := int(st["hiddenTotal"].(float64))
+	if tot != 50 {
+		t.Fatalf("searching hidden items should match 50, got %d", tot)
+	}
+	for _, raw := range st["hidden"].([]any) {
+		title := raw.(map[string]any)["title"].(string)
+		if !strings.Contains(title, "pikachu") {
+			t.Fatalf("search returned a non-matching item: %q", title)
+		}
+	}
+}
+
+func TestHiddenPageBeyondEndClampsBack(t *testing.T) {
+	e := newPatchEnv(t)
+	e.seedListing(t, "mercari", "one", "only item")
+	if code, _ := e.post(t, "/listings/hide", url.Values{
+		"source": {"mercari"}, "external_id": {"one"}, "hidden": {"1"},
+	}); code != http.StatusNoContent {
+		t.Fatal("hide failed")
+	}
+	st := e.stateWith(t, "hidden=1&hpage=9")
+	if p := int(st["hiddenPage"].(float64)); p != 1 {
+		t.Errorf("an out-of-range page must clamp to the last page, got %d", p)
+	}
+	if n := len(st["hidden"].([]any)); n != 1 {
+		t.Errorf("clamped page should still return the item, got %d", n)
+	}
+}
+
+func TestHiddenControlsRenderInDashboard(t *testing.T) {
+	e := newPatchEnv(t)
+	req, _ := http.NewRequest(http.MethodGet, e.ts.URL+"/", nil)
+	req.AddCookie(e.session)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	body := string(raw)
+	for _, want := range []string{
+		`id="hidden-filter"`, `id="hidden-thumbs"`, `id="hidden-prev"`, `id="hidden-next"`,
+		`id="hidden-pageinfo"`, "hiddenThumbs", "cardacts",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard is missing %q", want)
+		}
 	}
 }

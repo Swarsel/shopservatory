@@ -185,3 +185,74 @@ func truncate(b []byte, n int) string {
 	}
 	return string(b[:n]) + "..."
 }
+
+func breadcrumbItemURLs(body []byte) []string {
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	doc.Find(`script[type="application/ld+json"]`).Each(func(_ int, sel *goquery.Selection) {
+		clean := strings.Map(func(r rune) rune {
+			if r < 0x20 {
+				return ' '
+			}
+			return r
+		}, sel.Text())
+		var raw json.RawMessage
+		if json.Unmarshal([]byte(clean), &raw) != nil {
+			return
+		}
+		var lists []struct {
+			Type     string `json:"@type"`
+			Elements []struct {
+				Position int             `json:"position"`
+				Item     json.RawMessage `json:"item"`
+			} `json:"itemListElement"`
+		}
+		if json.Unmarshal(raw, &lists) != nil {
+			lists = lists[:0]
+			var one struct {
+				Type     string `json:"@type"`
+				Elements []struct {
+					Position int             `json:"position"`
+					Item     json.RawMessage `json:"item"`
+				} `json:"itemListElement"`
+			}
+			if json.Unmarshal(raw, &one) != nil {
+				return
+			}
+			lists = append(lists, one)
+		}
+		for _, l := range lists {
+			if l.Type != "BreadcrumbList" {
+				continue
+			}
+			for _, e := range l.Elements {
+				out = append(out, breadcrumbURL(e.Item))
+			}
+		}
+	})
+	return out
+}
+
+func breadcrumbURL(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		return str
+	}
+	var obj struct {
+		ID  string `json:"@id"`
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		if obj.ID != "" {
+			return obj.ID
+		}
+		return obj.URL
+	}
+	return ""
+}

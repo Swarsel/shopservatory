@@ -992,7 +992,7 @@ func TestHideListingRemovesItFromTheFeed(t *testing.T) {
 	}
 	hiddenIDs := func() []string {
 		t.Helper()
-		list, _, err := st.HiddenListingsPage(ctx, u.ID, 50, 0)
+		list, _, err := st.HiddenListingsPage(ctx, u.ID, "", nil, 50, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1093,7 +1093,7 @@ func TestHidingAppliesAcrossDuplicateSearches(t *testing.T) {
 	if len(list) != 0 {
 		t.Fatalf("the item must be hidden even though a second search also found it: %v", list)
 	}
-	if h, _, _ := st.HiddenListingsPage(ctx, u.ID, 50, 0); len(h) != 1 {
+	if h, _, _ := st.HiddenListingsPage(ctx, u.ID, "", nil, 50, 0); len(h) != 1 {
 		t.Fatalf("hidden section should show it once, got %d", len(h))
 	}
 	_ = sids
@@ -1170,13 +1170,13 @@ func TestHiddenColumnMigratesOntoOldListings(t *testing.T) {
 	if total != 1 || len(list) != 1 || list[0].ExternalID != "legacy1" {
 		t.Fatalf("existing listings must stay visible: total=%d list=%v", total, list)
 	}
-	if h, ht, _ := st.HiddenListingsPage(ctx, 1, 10, 0); ht != 0 || len(h) != 0 {
+	if h, ht, _ := st.HiddenListingsPage(ctx, 1, "", nil, 10, 0); ht != 0 || len(h) != 0 {
 		t.Fatal("pre-existing listings must default to not hidden")
 	}
 	if _, err := st.SetListingHidden(ctx, 1, "mercari", "legacy1", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, ht, _ := st.HiddenListingsPage(ctx, 1, 10, 0); ht != 1 {
+	if _, ht, _ := st.HiddenListingsPage(ctx, 1, "", nil, 10, 0); ht != 1 {
 		t.Fatal("hiding must work after migration")
 	}
 }
@@ -1336,7 +1336,7 @@ func TestFeedItemsHiddenSyncsThroughTrigger(t *testing.T) {
 	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 0 {
 		t.Errorf("hidden item must leave the feed, total=%d", total)
 	}
-	if _, total, _ := st.HiddenListingsPage(ctx, u.ID, 50, 0); total != 1 {
+	if _, total, _ := st.HiddenListingsPage(ctx, u.ID, "", nil, 50, 0); total != 1 {
 		t.Errorf("hidden section should show it once, total=%d", total)
 	}
 
@@ -1518,5 +1518,129 @@ func TestExclusionChangesTakeEffectBothWays(t *testing.T) {
 	}
 	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 2 {
 		t.Error("removing an exclusion must bring the item back")
+	}
+}
+
+func TestFeedCollapsesIdenticalRelistings(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-dup", "dup@example.com", "Dup")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "paypayfleamarket", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	now := time.Now()
+
+	for _, id := range []string{"z1", "n2"} {
+		if _, _, err := st.RecordListing(ctx, sid, "paypayfleamarket", source.Listing{
+			ExternalID: id, Title: "same product", Price: 11980, Currency: "JPY",
+			URL: "https://paypayfleamarket.yahoo.co.jp/item/" + id,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := st.RecordListing(ctx, sid, "paypayfleamarket", source.Listing{
+		ExternalID: "other", Title: "different product", Price: 500, Currency: "JPY",
+		URL: "https://paypayfleamarket.yahoo.co.jp/item/other",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	list, total, err := st.ListingsPage(ctx, u.ID, "", nil, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		ids := make([]string, 0, len(list))
+		for _, l := range list {
+			ids = append(ids, l.ExternalID)
+		}
+		t.Fatalf("identical relistings should collapse to one card: total=%d ids=%v", total, ids)
+	}
+	seen := map[string]bool{}
+	for _, l := range list {
+		seen[l.ExternalID] = true
+	}
+	if !seen["z1"] {
+		t.Error("the earliest copy should be the one kept")
+	}
+	if seen["n2"] {
+		t.Error("the later identical copy must be collapsed away")
+	}
+	if !seen["other"] {
+		t.Error("a genuinely different item must stay visible")
+	}
+}
+
+func TestFeedKeepsSameTitleAtDifferentPrices(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-dp2", "dp2@example.com", "Dp2")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	now := time.Now()
+	for i, p := range []float64{1000, 2000} {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: fmt.Sprintf("p%d", i), Title: "same title", Price: p, Currency: "JPY",
+			URL: fmt.Sprintf("https://e/%d", i),
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 2 {
+		t.Errorf("a cheaper copy is a different offer and must stay, total=%d", total)
+	}
+}
+
+func TestFeedKeepsSameTitleOnDifferentSources(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-dp3", "dp3@example.com", "Dp3")
+	now := time.Now()
+	for _, src := range []string{"mercari", "rakuma"} {
+		sid, _ := st.CreateSearch(ctx, Search{
+			UserID: u.ID, Source: src, Query: "q", Interval: time.Minute, Enabled: true,
+		})
+		if _, _, err := st.RecordListing(ctx, sid, src, source.Listing{
+			ExternalID: "id-" + src, Title: "same title", Price: 390, Currency: "JPY",
+			URL: "https://e/" + src,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 2 {
+		t.Errorf("the same product on two marketplaces must both stay visible, total=%d", total)
+	}
+}
+
+func TestDeletingTheKeptCopyPromotesTheOther(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-dp4", "dp4@example.com", "Dp4")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	now := time.Now()
+	for _, id := range []string{"first", "second"} {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: id, Title: "dupe", Price: 100, Currency: "JPY", URL: "https://e/" + id,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 1 {
+		t.Fatal("baseline should collapse to one")
+	}
+
+	if _, err := st.db.ExecContext(ctx,
+		`DELETE FROM listings WHERE external_id = 'first'`); err != nil {
+		t.Fatal(err)
+	}
+	list, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0)
+	if total != 1 {
+		t.Fatalf("the surviving copy must not stay hidden behind a deleted one, total=%d", total)
+	}
+	if len(list) != 1 || list[0].ExternalID != "second" {
+		t.Errorf("expected the remaining copy to be visible, got %v", list)
 	}
 }

@@ -196,3 +196,78 @@ func TestYahooSnapshotNativeUsesJPClient(t *testing.T) {
 		t.Errorf("endsAt = %s", snap.EndsAt)
 	}
 }
+
+const yahooBreadcrumbHTML = `<html><head>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[
+{"@type":"ListItem","position":1,"item":{"@id":"https://auctions.yahoo.co.jp/","name":"top"}},
+{"@type":"ListItem","position":2,"item":{"@id":"https://auctions.yahoo.co.jp/list4/25464-category.html","name":"toys"}},
+{"@type":"ListItem","position":3,"item":{"@id":"https://auctions.yahoo.co.jp/list4/27727-category.html","name":"games"}},
+{"@type":"ListItem","position":4,"item":{"@id":"https://auctions.yahoo.co.jp/category/list/2084317608","name":"single cards"}}]}</script>
+<script type="application/ld+json">{"@type":"Product","name":"card","image":["https://x/1.jpg"],
+"offers":{"priceCurrency":"JPY","price":"1200","priceValidUntil":"2026-08-03T22:05:18+09:00","availability":"https://schema.org/InStock"}}</script>
+</head><body></body></html>`
+
+func TestYahooCategoryChainFromBreadcrumbs(t *testing.T) {
+	got := yahooCategoryChain([]byte(yahooBreadcrumbHTML))
+	want := []string{"25464", "27727", "2084317608"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestYahooCategoryChainSkipsNonCategoryCrumbs(t *testing.T) {
+	got := yahooCategoryChain([]byte(yahooBreadcrumbHTML))
+	for _, id := range got {
+		if id == "" {
+			t.Error("blank ids must be skipped")
+		}
+	}
+	if len(yahooCategoryChain([]byte(`<html>nothing here</html>`))) != 0 {
+		t.Error("a page without breadcrumbs must yield no categories")
+	}
+}
+
+func TestYahooEnrichListingReturnsCategoryChain(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(yahooBreadcrumbHTML))
+	}))
+	defer srv.Close()
+
+	y := newYahooAuctions(nil, clientTo(t, srv.URL), quietLog())
+	_, _, extra, ok := y.EnrichListing(context.Background(), "e1")
+	if !ok {
+		t.Fatal("enrichment should succeed")
+	}
+	if extra["category"] != "2084317608" {
+		t.Errorf("leaf category = %q want the deepest crumb", extra["category"])
+	}
+	if extra["categories"] != "25464,27727,2084317608" {
+		t.Errorf("chain = %q", extra["categories"])
+	}
+	if extra["ends"] == "" {
+		t.Error("end time should still be captured alongside categories")
+	}
+}
+
+func TestYahooEnrichWorksWithCategoriesButNoEndTime(t *testing.T) {
+	body := `<html><head><script type="application/ld+json">{"@type":"BreadcrumbList","itemListElement":[
+	{"@type":"ListItem","position":1,"item":{"@id":"https://auctions.yahoo.co.jp/list4/25464-category.html"}}]}</script></head></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	y := newYahooAuctions(nil, clientTo(t, srv.URL), quietLog())
+	_, _, extra, ok := y.EnrichListing(context.Background(), "e1")
+	if !ok {
+		t.Fatal("a page with categories but no end time should still enrich")
+	}
+	if extra["categories"] != "25464" {
+		t.Errorf("categories = %q", extra["categories"])
+	}
+}

@@ -208,10 +208,12 @@ CREATE TABLE IF NOT EXISTS feed_items (
     cat_path    TEXT NOT NULL DEFAULT '',
     title       TEXT NOT NULL DEFAULT '',
     excluded    INTEGER NOT NULL DEFAULT 0,
+    dup_of      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, source, external_id)
 );
-CREATE INDEX IF NOT EXISTS idx_feed_items_page ON feed_items(user_id, hidden, excluded, first_seen DESC, listing_id);
+CREATE INDEX IF NOT EXISTS idx_feed_items_page ON feed_items(user_id, hidden, excluded, dup_of, first_seen DESC, listing_id);
 CREATE INDEX IF NOT EXISTS idx_feed_items_listing ON feed_items(listing_id);
+CREATE INDEX IF NOT EXISTS idx_feed_items_dupkey ON feed_items(user_id, source, title, listing_id);
 
 CREATE TRIGGER IF NOT EXISTS feed_items_after_insert AFTER INSERT ON listings
 BEGIN
@@ -248,6 +250,10 @@ BEGIN
                       WHERE se2.user_id = feed_items.user_id AND l2.source = feed_items.source
                         AND l2.external_id = feed_items.external_id)
     WHERE listing_id = OLD.id;
+
+    UPDATE feed_items SET dup_of = 0
+    WHERE dup_of != 0
+      AND NOT EXISTS (SELECT 1 FROM feed_items k WHERE k.listing_id = feed_items.dup_of);
 END;
 
 CREATE TRIGGER IF NOT EXISTS feed_items_after_extra AFTER UPDATE OF extra ON listings
@@ -265,6 +271,42 @@ BEGIN
       AND user_id = (SELECT se.user_id FROM searches se WHERE se.id = NEW.search_id);
 END;
 `
+
+func (s *Store) RefreshFeedDuplicates(ctx context.Context, userID int64) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE feed_items SET dup_of = 0 WHERE user_id = ? AND dup_of != 0`, userID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE feed_items SET dup_of = (
+		     SELECT d.keep FROM dup_scratch d WHERE d.lid = feed_items.listing_id
+		 )
+		 WHERE user_id = ?
+		   AND listing_id IN (SELECT lid FROM dup_scratch)`, userID)
+	return err
+}
+
+func (s *Store) rebuildDupScratch(ctx context.Context, userID int64) error {
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS dup_scratch`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TEMP TABLE dup_scratch AS
+		SELECT k.listing_id AS lid, m.keep AS keep
+		FROM (SELECT f.listing_id, f.source, f.title, l.price
+		      FROM feed_items f JOIN listings l ON l.id = f.listing_id
+		      WHERE f.user_id = ?1 AND f.title != '') k
+		JOIN (SELECT f.source AS source, f.title AS title, l.price AS price, MIN(f.listing_id) AS keep
+		      FROM feed_items f JOIN listings l ON l.id = f.listing_id
+		      WHERE f.user_id = ?1 AND f.title != ''
+		      GROUP BY f.source, f.title, l.price) m
+		  ON m.source = k.source AND m.title = k.title AND m.price = k.price
+		WHERE m.keep < k.listing_id`, userID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS dup_scratch_lid ON dup_scratch(lid)`)
+	return err
+}
 
 func (s *Store) RefreshFeedExclusions(ctx context.Context, userID int64) error {
 	var conds []string
@@ -311,12 +353,37 @@ func (s *Store) buildFeedItems(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, feedItemsSchema); err != nil {
 		return err
 	}
+	changed := false
+	for _, col := range [][2]string{
+		{"cat_path", "TEXT NOT NULL DEFAULT ''"},
+		{"title", "TEXT NOT NULL DEFAULT ''"},
+		{"excluded", "INTEGER NOT NULL DEFAULT 0"},
+		{"dup_of", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		added, err := s.addColumn(ctx, "feed_items", col[0], col[1])
+		if err != nil {
+			return err
+		}
+		changed = changed || added
+	}
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feed_items`).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
-		return nil
+		if !changed {
+			return nil
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE feed_items SET
+			     title = COALESCE((SELECT l.title FROM listings l WHERE l.id = feed_items.listing_id), ''),
+			     cat_path = COALESCE((SELECT ',' || COALESCE(json_extract(l.extra, '$.category'), '') || ',' ||
+			                                 COALESCE(json_extract(l.extra, '$.categories'), '') || ','
+			                          FROM listings l WHERE l.id = feed_items.listing_id), '')
+			 WHERE title = '' OR cat_path = ''`); err != nil {
+			return err
+		}
+		return s.refreshAllFeedFlags(ctx)
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO feed_items (user_id, source, external_id, listing_id, first_seen, hidden, cat_path, title)
@@ -329,6 +396,10 @@ func (s *Store) buildFeedItems(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.refreshAllFeedFlags(ctx)
+}
+
+func (s *Store) refreshAllFeedFlags(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT user_id FROM feed_items`)
 	if err != nil {
 		return err
@@ -350,14 +421,25 @@ func (s *Store) buildFeedItems(ctx context.Context) error {
 		if err := s.RefreshFeedExclusions(ctx, id); err != nil {
 			return err
 		}
+		if err := s.rebuildDupScratch(ctx, id); err != nil {
+			return err
+		}
+		if err := s.RefreshFeedDuplicates(ctx, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table, column, typ string) error {
+	_, err := s.addColumn(ctx, table, column, typ)
+	return err
+}
+
+func (s *Store) addColumn(ctx context.Context, table, column, typ string) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -367,17 +449,19 @@ func (s *Store) addColumnIfMissing(ctx context.Context, table, column, typ strin
 			dflt             any
 		)
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return err
+			return false, err
 		}
 		if name == column {
-			return rows.Close()
+			return false, rows.Close()
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, typ))
-	return err
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, typ)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) EnsureDefaultUser(ctx context.Context, name, email string) (User, error) {
@@ -737,11 +821,30 @@ func (s *Store) RecordListing(ctx context.Context, searchID int64, src string, l
 	if err := s.markFeedItemExcluded(ctx, id); err != nil {
 		return Listing{}, false, err
 	}
+	if err := s.markFeedItemDuplicate(ctx, id); err != nil {
+		return Listing{}, false, err
+	}
 	return Listing{
 		ID: id, SearchID: searchID, Source: src, ExternalID: l.ExternalID,
 		Title: l.Title, Price: l.Price, Currency: l.Currency, URL: l.URL,
 		ImageURL: l.ImageURL, SaleType: l.SaleType, Extra: l.Extra, FirstSeen: now, ListedAt: l.ListedAt,
 	}, true, nil
+}
+
+func (s *Store) markFeedItemDuplicate(ctx context.Context, listingID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE feed_items SET dup_of = COALESCE((
+		     SELECT MIN(k.listing_id) FROM feed_items k
+		     JOIN listings kl ON kl.id = k.listing_id
+		     WHERE k.user_id = feed_items.user_id
+		       AND k.source = feed_items.source
+		       AND k.title = feed_items.title
+		       AND k.title != ''
+		       AND k.listing_id < feed_items.listing_id
+		       AND kl.price = (SELECT price FROM listings WHERE id = feed_items.listing_id)
+		 ), 0)
+		 WHERE listing_id = ? AND title != ''`, listingID)
+	return err
 }
 
 func (s *Store) markFeedItemExcluded(ctx context.Context, listingID int64) error {
@@ -796,15 +899,15 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 	return s.listingsPage(ctx, userID, filter, sources, limit, offset, false)
 }
 
-func (s *Store) HiddenListingsPage(ctx context.Context, userID int64, limit, offset int) ([]Listing, int, error) {
-	return s.listingsPage(ctx, userID, "", nil, limit, offset, true)
+func (s *Store) HiddenListingsPage(ctx context.Context, userID int64, filter string, sources []string, limit, offset int) ([]Listing, int, error) {
+	return s.listingsPage(ctx, userID, filter, sources, limit, offset, true)
 }
 
 func (s *Store) listingsPage(ctx context.Context, userID int64, filter string, sources []string, limit, offset int, hidden bool) ([]Listing, int, error) {
 	where := `f.user_id = ? AND f.hidden = ?`
 	args := []any{userID, boolToInt(hidden)}
 	if !hidden {
-		where += ` AND f.excluded = 0`
+		where += ` AND f.excluded = 0 AND f.dup_of = 0`
 	}
 
 	if filter != "" {
