@@ -964,6 +964,14 @@ const pageTemplate = `<!doctype html>
         act.appendChild(btn('archive', function(){ action('/monitors/'+m.id+'/archive'); }));
         act.appendChild(btn('delete', function(){ if(confirm('Stop monitoring “' + (m.title || m.url) + '”?')) action('/monitors/'+m.id+'/delete'); }));
       }
+      if (m.doorzoUrl) {
+        var dzRow = el('div');
+        dzRow.style.marginTop = '.3rem';
+        var dzb = btn('open in doorzo', function(){ window.open(m.doorzoUrl, '_blank', 'noopener'); });
+        dzb.title = 'Buy via the Doorzo proxy service';
+        dzRow.appendChild(dzb);
+        act.appendChild(dzRow);
+      }
       tr.appendChild(act); tb.appendChild(tr);
 
       if (monExpanded[m.id]) {
@@ -1018,6 +1026,13 @@ const pageTemplate = `<!doctype html>
       var mon = el('button','cardbtn','monitor'); mon.type='button';
       mon.onclick = function(){ monitorItem(item, mon); };
       body.appendChild(mon);
+      if (item.doorzoUrl) {
+        var dz = el('button','cardbtn','doorzo'); dz.type='button';
+        dz.style.marginLeft = '.3rem';
+        dz.title = 'Buy via the Doorzo proxy service';
+        dz.onclick = function(){ window.open(item.doorzoUrl, '_blank', 'noopener'); };
+        body.appendChild(dz);
+      }
       c.appendChild(body);
       return c;
     }

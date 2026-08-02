@@ -352,6 +352,7 @@ type listingView struct {
 	SaleType    string  `json:"saleType"`
 	Ends        string  `json:"ends,omitempty"`
 	Category    string  `json:"category,omitempty"`
+	DoorzoURL   string  `json:"doorzoUrl,omitempty"`
 	Seen        string  `json:"seen"`
 }
 
@@ -729,6 +730,7 @@ func (s *Server) listingViews(listings []store.Listing, target string) []listing
 			Title: l.Title, URL: l.URL, ImageURL: l.ImageURL, SaleType: l.SaleType,
 			Ends:        l.Extra["ends"],
 			Category:    l.Extra["category"],
+			DoorzoURL:   source.DoorzoURL(l.Source, l.URL, l.ExternalID),
 			Price:       priceString(l.Price, l.Currency),
 			PriceValue:  l.Price,
 			Currency:    l.Currency,

@@ -28,6 +28,7 @@ type monitorView struct {
 	Enabled     bool             `json:"enabled"`
 	Archived    bool             `json:"archived"`
 	Interval    string           `json:"interval"`
+	DoorzoURL   string           `json:"doorzoUrl,omitempty"`
 	LastChecked string           `json:"lastChecked"`
 	History     []pricePointView `json:"history"`
 }
@@ -68,6 +69,7 @@ func (s *Server) monitorViews(ctx context.Context, userID int64, target string) 
 			Status:      m.Status, SaleType: m.SaleType, Ends: ends,
 			Enabled: m.Enabled, Archived: m.Archived,
 			Interval: m.Interval.String(), LastChecked: checked, History: points,
+			DoorzoURL: source.DoorzoURL(m.Source, m.URL, m.ExternalID),
 		})
 	}
 	return out, nil
