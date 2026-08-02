@@ -69,12 +69,18 @@ func (y *yahooAuctions) searchDirect(ctx context.Context, spec SearchSpec) ([]Li
 	}
 	endpoint := "https://auctions.yahoo.co.jp/search/search?" + q.Encode()
 
-	body, err := y.jp.GetBody(ctx, endpoint, map[string]string{
+	body, status, err := y.jp.Fetch(ctx, endpoint, map[string]string{
 		"Accept":          "text/html,application/xhtml+xml",
 		"Accept-Language": "ja-JP,ja;q=0.9",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("yahooauctions(direct): fetch: %w", err)
+	}
+	if status == http.StatusNotFound {
+		return nil, nil
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("yahooauctions(direct): fetch: unexpected status %d", status)
 	}
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
@@ -122,10 +128,25 @@ func (y *yahooAuctions) searchDirect(ctx context.Context, spec SearchSpec) ([]Li
 			},
 		})
 	})
-	if len(listings) == 0 {
+	if len(listings) == 0 && !yahooNoResultsPage(body) {
 		return nil, errYahooNoItems
 	}
 	return listings, nil
+}
+
+var yahooNoResults = []string{
+	"該当する商品は見つかりませんでした",
+	"に一致する商品は見つかりませんでした",
+}
+
+func yahooNoResultsPage(body []byte) bool {
+	text := string(body)
+	for _, marker := range yahooNoResults {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 var yahooAuctionPath = regexp.MustCompile(`/auction/([A-Za-z0-9]+)`)

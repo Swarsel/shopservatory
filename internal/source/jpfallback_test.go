@@ -245,3 +245,99 @@ func TestPayPayCategoryChain(t *testing.T) {
 		t.Errorf("empty category should yield empty chain, got %q", got)
 	}
 }
+
+func TestYahooZeroResultsDoesNotFallBack(t *testing.T) {
+	var zenHit bool
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		zenHit = true
+		_, _ = w.Write([]byte(`<html></html>`))
+	}))
+	defer zen.Close()
+
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`<html><body>「x」に一致する商品は見つかりませんでした</body></html>`))
+	}))
+	defer direct.Close()
+
+	y := newYahooAuctions(clientTo(t, zen.URL), clientTo(t, direct.URL), quietLog())
+	got, err := y.Search(context.Background(), SearchSpec{Query: "nothing matches"})
+	if err != nil {
+		t.Fatalf("a zero-result search must not be an error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no listings, got %d", len(got))
+	}
+	if zenHit {
+		t.Error("a genuine zero-result search must not fall back to zenmarket")
+	}
+}
+
+func TestYahooRealFailureStillFallsBack(t *testing.T) {
+	var zenHit bool
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		zenHit = true
+		_, _ = w.Write([]byte(`<html></html>`))
+	}))
+	defer zen.Close()
+
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer direct.Close()
+
+	y := newYahooAuctions(clientTo(t, zen.URL), clientTo(t, direct.URL), quietLog())
+	_, _ = y.Search(context.Background(), SearchSpec{Query: "x"})
+	if !zenHit {
+		t.Error("a 403 is a real failure and must still fall back")
+	}
+}
+
+func TestPayPayZeroResultsDoesNotFallBack(t *testing.T) {
+	var buyeeHit bool
+	buyee := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		buyeeHit = true
+		_, _ = w.Write([]byte(`<html></html>`))
+	}))
+	defer buyee.Close()
+
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"totalResultsAvailable":0,"items":[]}`))
+	}))
+	defer direct.Close()
+
+	p := newPayPayFleaMarket(clientTo(t, buyee.URL), clientTo(t, direct.URL), quietLog())
+	got, err := p.Search(context.Background(), SearchSpec{Query: "nothing"})
+	if err != nil {
+		t.Fatalf("a zero-result search must not error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no listings, got %d", len(got))
+	}
+	if buyeeHit {
+		t.Error("a genuine zero-result search must not spawn the buyee browser path")
+	}
+}
+
+func TestPayPayTruncatedResponseStillFallsBack(t *testing.T) {
+	var buyeeHit bool
+	buyee := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		buyeeHit = true
+		_, _ = w.Write([]byte(`<html></html>`))
+	}))
+	defer buyee.Close()
+
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"totalResultsAvailable":500,"items":[]}`))
+	}))
+	defer direct.Close()
+
+	p := newPayPayFleaMarket(clientTo(t, buyee.URL), clientTo(t, direct.URL), quietLog())
+	_, err := p.Search(context.Background(), SearchSpec{Query: "x"})
+	if buyeeHit {
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), "buyee") {
+		t.Fatalf("results claimed but none returned must fall through to buyee, got: %v", err)
+	}
+}

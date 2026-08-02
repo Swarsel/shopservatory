@@ -50,3 +50,18 @@ func TestMercariEndedAuctionIsNotExtending(t *testing.T) {
 		t.Error("an ended auction must not be reported as extending")
 	}
 }
+
+func TestYahooNoResultsPageDetection(t *testing.T) {
+	live := `<html><head><title>Yahoo!オークション -裁定の箱とマギアの中古品一覧</title></head>
+	<body><p>「裁定の箱とマギア」に一致する商品は見つかりませんでした</p></body></html>`
+	if !yahooNoResultsPage([]byte(live)) {
+		t.Error("the wording yahoo actually uses must be recognised")
+	}
+	bare := `<html><body>該当する商品は見つかりませんでした</body></html>`
+	if !yahooNoResultsPage([]byte(bare)) {
+		t.Error("the bare wording should also be recognised")
+	}
+	if yahooNoResultsPage([]byte(`<html><body>plenty of results here</body></html>`)) {
+		t.Error("a normal page must not be treated as no-results")
+	}
+}

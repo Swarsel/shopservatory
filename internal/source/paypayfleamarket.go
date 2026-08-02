@@ -70,7 +70,10 @@ func (p *payPayFleaMarket) searchAPI(ctx context.Context, spec SearchSpec) ([]Li
 		return nil, fmt.Errorf("paypayfleamarket(direct): decode: %w", err)
 	}
 	if len(payload.Items) == 0 {
-		return nil, errPayPayNoItems
+		if payload.TotalResultsAvailable > 0 {
+			return nil, errPayPayNoItems
+		}
+		return nil, nil
 	}
 
 	var listings []Listing
