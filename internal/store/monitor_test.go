@@ -57,3 +57,87 @@ func TestMonitorFlow(t *testing.T) {
 		t.Fatalf("after delete: %d", len(list))
 	}
 }
+
+func TestExtendingAuctionClearsStaleEndTime(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-ext", "ext@example.com", "Ext")
+
+	ends := time.Now().Add(2 * time.Minute).Truncate(time.Second)
+	id, err := st.AddMonitor(ctx, MonitoredItem{
+		UserID: u.ID, Source: "mercari", ExternalID: "m1",
+		URL: "https://jp.mercari.com/item/m1", Title: "auction",
+		SaleType: "auction", Interval: time.Hour, Enabled: true,
+		Status: "active", EndsAt: &ends,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := st.GetMonitor(ctx, id); m.EndsAt == nil || !m.EndsAt.Equal(ends) {
+		t.Fatalf("precondition: end time should be stored, got %v", m.EndsAt)
+	}
+
+	if err := st.RecordMonitorCheck(ctx, id, source.ItemSnapshot{
+		Price: 81000, Currency: "JPY", Status: "active", SaleType: "auction",
+		Extending: true,
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := st.GetMonitor(ctx, id)
+	if m.EndsAt != nil {
+		t.Errorf("an extending auction must drop its stale end time, got %v", m.EndsAt)
+	}
+	if m.Status != "active" {
+		t.Errorf("status = %q, want active", m.Status)
+	}
+	if m.LastPrice != 81000 {
+		t.Errorf("price should still update, got %v", m.LastPrice)
+	}
+}
+
+func TestNewEndTimeReplacesTheOldOne(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-ext2", "ext2@example.com", "Ext2")
+
+	old := time.Now().Add(time.Minute).Truncate(time.Second)
+	id, _ := st.AddMonitor(ctx, MonitoredItem{
+		UserID: u.ID, Source: "mercari", ExternalID: "m2",
+		URL: "https://jp.mercari.com/item/m2", SaleType: "auction",
+		Interval: time.Hour, Enabled: true, Status: "active", EndsAt: &old,
+	})
+
+	extended := time.Now().Add(11 * time.Minute).Truncate(time.Second)
+	if err := st.RecordMonitorCheck(ctx, id, source.ItemSnapshot{
+		Price: 1, Currency: "JPY", Status: "active", SaleType: "auction", EndsAt: extended,
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := st.GetMonitor(ctx, id)
+	if m.EndsAt == nil || !m.EndsAt.Equal(extended) {
+		t.Fatalf("a freshly published end time must win, got %v want %v", m.EndsAt, extended)
+	}
+}
+
+func TestCheckWithoutEndInfoKeepsExistingEndTime(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-ext3", "ext3@example.com", "Ext3")
+
+	ends := time.Now().Add(time.Hour).Truncate(time.Second)
+	id, _ := st.AddMonitor(ctx, MonitoredItem{
+		UserID: u.ID, Source: "ebay", ExternalID: "e1",
+		URL: "https://ebay.com/itm/e1", SaleType: "auction",
+		Interval: time.Hour, Enabled: true, Status: "active", EndsAt: &ends,
+	})
+
+	if err := st.RecordMonitorCheck(ctx, id, source.ItemSnapshot{
+		Price: 5, Currency: "USD", Status: "active", SaleType: "auction",
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := st.GetMonitor(ctx, id)
+	if m.EndsAt == nil || !m.EndsAt.Equal(ends) {
+		t.Fatalf("a plain check must not wipe a known end time, got %v", m.EndsAt)
+	}
+}

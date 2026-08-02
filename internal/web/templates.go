@@ -295,24 +295,24 @@ const pageTemplate = `<!doctype html>
 
     function el(tag, cls, text) { var e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
 
-    function timeLeft(ends) {
-      if (!ends) return '';
+    function timeLeft(ends, live) {
+      if (!ends) return live ? 'extending…' : '';
       var d = new Date(ends);
       if (isNaN(d)) return '';
       var mins = Math.floor((d - Date.now()) / 60000);
-      if (mins <= 0) return 'ended';
+      if (mins <= 0) return live ? 'extending…' : 'ended';
       var days = Math.floor(mins / 1440), hours = Math.floor((mins % 1440) / 60);
       if (days > 0) return days + 'd ' + hours + 'h left';
       if (hours > 0) return hours + 'h ' + (mins % 60) + 'm left';
       return mins + 'm left';
     }
 
-    function timeLeftSec(ends) {
-      if (!ends) return '';
+    function timeLeftSec(ends, live) {
+      if (!ends) return live ? 'extending…' : '';
       var d = new Date(ends);
       if (isNaN(d)) return '';
       var secs = Math.floor((d - Date.now()) / 1000);
-      if (secs <= 0) return 'ended';
+      if (secs <= 0) return live ? 'extending…' : 'ended';
       var days = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60), s = secs % 60;
       if (days > 0) return days + 'd ' + h + 'h ' + m + 'm ' + s + 's left';
       if (h > 0) return h + 'h ' + m + 'm ' + s + 's left';
@@ -340,7 +340,11 @@ const pageTemplate = `<!doctype html>
 
     function tickCountdowns() {
       var els = document.querySelectorAll('[data-ends]');
-      for (var i = 0; i < els.length; i++) els[i].textContent = timeLeftSec(els[i].getAttribute('data-ends'));
+      for (var i = 0; i < els.length; i++) {
+        els[i].textContent = timeLeftSec(
+          els[i].getAttribute('data-ends'),
+          els[i].getAttribute('data-live') === '1');
+      }
     }
 
     function action(url) { return fetch(url, {method:'POST'}).then(refresh).catch(function(){}); }
@@ -977,10 +981,13 @@ const pageTemplate = `<!doctype html>
       var std = el('td'); std.appendChild(el('span','status-'+(m.status||'active'), m.status||'active'));
       if (!isArchived && !m.enabled) { var pp = el('span','pill','paused'); pp.style.marginLeft='.3rem'; std.appendChild(pp); }
       if (!isArchived) {
-        var mtl = timeLeftSec(m.ends);
+        var mLive = (m.status || 'active') === 'active' && m.saleType === 'auction';
+        var mtl = timeLeftSec(m.ends, mLive);
         if (mtl) {
-          var mts=el('div','muted',mtl); mts.style.fontSize='.75rem'; mts.setAttribute('data-ends', m.ends);
-          mts.title = endDateLabel(m.ends);
+          var mts=el('div','muted',mtl); mts.style.fontSize='.75rem';
+          mts.setAttribute('data-ends', m.ends || '');
+          if (mLive) mts.setAttribute('data-live', '1');
+          if (m.ends) mts.title = endDateLabel(m.ends);
           std.appendChild(mts);
         }
       }
@@ -1066,7 +1073,7 @@ const pageTemplate = `<!doctype html>
       var auc = el('div','aucrow');
       if (item.saleType === 'auction') {
         var ap=el('span','pill','auction'); ap.style.marginRight='.3rem'; auc.appendChild(ap);
-        var tl = timeLeft(item.ends);
+        var tl = timeLeft(item.ends, item.saleType === 'auction');
         if (tl) { var ts=el('span','muted',tl); ts.style.fontSize='.75rem'; ts.title = endDateLabel(item.ends); auc.appendChild(ts); }
       }
       body.appendChild(auc);

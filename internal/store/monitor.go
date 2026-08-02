@@ -100,6 +100,8 @@ func (s *Store) RecordMonitorCheck(ctx context.Context, id int64, snap source.It
 	var endsAt int64
 	if !snap.EndsAt.IsZero() {
 		endsAt = snap.EndsAt.Unix()
+	} else if snap.Extending {
+		endsAt = -1
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE monitored_items
@@ -108,11 +110,11 @@ func (s *Store) RecordMonitorCheck(ctx context.Context, id int64, snap source.It
 		        image_url = CASE WHEN ? != '' THEN ? ELSE image_url END,
 		        currency = CASE WHEN ? != '' THEN ? ELSE currency END,
 		        sale_type = CASE WHEN ? != '' THEN ? ELSE sale_type END,
-		        ends_at = CASE WHEN ? > 0 THEN ? ELSE ends_at END
+		        ends_at = CASE WHEN ? > 0 THEN ? WHEN ? = -1 THEN 0 ELSE ends_at END
 		  WHERE id = ?`,
 		snap.Price, statusOrActive(snap.Status), observedAt.Unix(),
 		snap.Title, snap.Title, snap.ImageURL, snap.ImageURL, snap.Currency, snap.Currency,
-		snap.SaleType, snap.SaleType, endsAt, endsAt, id)
+		snap.SaleType, snap.SaleType, endsAt, endsAt, endsAt, id)
 	return err
 }
 

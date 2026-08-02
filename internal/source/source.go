@@ -128,6 +128,8 @@ type ItemSnapshot struct {
 	Status   string
 	SaleType string
 	EndsAt   time.Time
+
+	Extending bool
 }
 
 type ItemMonitor interface {

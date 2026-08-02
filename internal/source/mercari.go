@@ -278,10 +278,16 @@ type mercariAuction struct {
 	ExpectedEndTime int64       `json:"expected_end_time"`
 }
 
+func (a mercariAuction) ongoing() bool {
+	return strings.EqualFold(a.State, "STATE_ONGOING")
+}
+
 func (a mercariAuction) extra() map[string]string {
 	extra := map[string]string{"bids": strconv.Itoa(a.TotalBids)}
 	if a.ExpectedEndTime > 0 {
 		extra["ends"] = time.Unix(a.ExpectedEndTime, 0).UTC().Format(time.RFC3339)
+	} else if a.ongoing() {
+		extra["extending"] = "1"
 	}
 	return extra
 }
@@ -371,6 +377,7 @@ func (m *mercari) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, er
 	}
 	saleType := ""
 	var endsAt time.Time
+	extending := false
 	if env.Data.Auction != nil {
 		saleType = "auction"
 		if p := env.Data.Auction.price(); p > 0 {
@@ -378,13 +385,15 @@ func (m *mercari) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, er
 		}
 		if env.Data.Auction.ExpectedEndTime > 0 {
 			endsAt = time.Unix(env.Data.Auction.ExpectedEndTime, 0)
+		} else if env.Data.Auction.ongoing() {
+			extending = true
 		}
 	}
 	var thumb string
 	if len(env.Data.Thumbnails) > 0 {
 		thumb = env.Data.Thumbnails[0]
 	}
-	return ItemSnapshot{Title: env.Data.Name, Price: price, Currency: "JPY", ImageURL: thumb, Status: status, SaleType: saleType, EndsAt: endsAt}, nil
+	return ItemSnapshot{Title: env.Data.Name, Price: price, Currency: "JPY", ImageURL: thumb, Status: status, SaleType: saleType, EndsAt: endsAt, Extending: extending}, nil
 }
 
 func mercariDPoP(method, htu string) (string, error) {
