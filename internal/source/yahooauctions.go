@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -173,6 +174,38 @@ func (y *yahooAuctions) searchZenmarket(ctx context.Context, spec SearchSpec) ([
 
 var zenJPY = regexp.MustCompile(`data-jpy='([^']*)'`)
 
+var yahooPriceValidUntil = regexp.MustCompile(`"priceValidUntil"\s*:\s*"([^"]+)"`)
+
+func yahooEndTime(body []byte) (time.Time, bool) {
+	m := yahooPriceValidUntil.FindSubmatch(body)
+	if m == nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, string(m[1]))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func (y *yahooAuctions) EnrichListing(ctx context.Context, externalID string) (float64, string, map[string]string, bool) {
+	if y.jp == nil || externalID == "" {
+		return 0, "", nil, false
+	}
+	body, err := y.jp.GetBody(ctx, "https://auctions.yahoo.co.jp/jp/auction/"+externalID, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "ja-JP,ja;q=0.9",
+	})
+	if err != nil {
+		return 0, "", nil, false
+	}
+	ends, ok := yahooEndTime(body)
+	if !ok {
+		return 0, "", nil, false
+	}
+	return 0, "auction", map[string]string{"ends": ends.UTC().Format(time.RFC3339)}, true
+}
+
 func (y *yahooAuctions) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
 	body, status, err := y.client.Fetch(ctx, rawURL, map[string]string{
 		"Accept":          "text/html,application/xhtml+xml",
@@ -187,12 +220,41 @@ func (y *yahooAuctions) Snapshot(ctx context.Context, rawURL string) (ItemSnapsh
 	if status < 200 || status >= 300 {
 		return ItemSnapshot{}, fmt.Errorf("yahooauctions: snapshot status %d", status)
 	}
+	if snap, ok := yahooNativeSnapshot(body); ok {
+		return snap, nil
+	}
+
 	m := zenJPY.FindStringSubmatch(string(body))
 	if m == nil {
 		return ItemSnapshot{}, fmt.Errorf("yahooauctions: price not found")
 	}
 	price, _ := strconv.ParseFloat(nonDigits.ReplaceAllString(m[1], ""), 64)
-	return ItemSnapshot{Price: price, Currency: "JPY", Status: "active", SaleType: "auction"}, nil
+	snap := ItemSnapshot{Price: price, Currency: "JPY", Status: "active", SaleType: "auction"}
+	if ends, ok := yahooEndTime(body); ok {
+		snap.EndsAt = ends
+	}
+	return snap, nil
+}
+
+var yahooOfferPrice = regexp.MustCompile(`"offers"\s*:\s*\{[^{}]*"price"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?`)
+
+func yahooNativeSnapshot(body []byte) (ItemSnapshot, bool) {
+	ends, ok := yahooEndTime(body)
+	if !ok {
+		return ItemSnapshot{}, false
+	}
+	m := yahooOfferPrice.FindSubmatch(body)
+	if m == nil {
+		return ItemSnapshot{}, false
+	}
+	price, err := strconv.ParseFloat(string(m[1]), 64)
+	if err != nil || price <= 0 {
+		return ItemSnapshot{}, false
+	}
+	return ItemSnapshot{
+		Price: price, Currency: "JPY", Status: "active",
+		SaleType: "auction", EndsAt: ends,
+	}, true
 }
 
 func yahooAuctionsURL(spec SearchSpec) string {

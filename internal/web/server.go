@@ -153,6 +153,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /admin/users/{id}/delete", b(s.requireAdmin(http.HandlerFunc(s.handleAdminDeleteUser))))
 
 	a := s.auth.APIAuth
+	mux.Handle("GET /api/v1/img", a(http.HandlerFunc(s.handleImageProxy)))
 	mux.Handle("GET /api/v1/me", a(http.HandlerFunc(s.handleAPIMe)))
 	mux.Handle("GET /api/v1/sources", a(http.HandlerFunc(s.handleAPISources)))
 	mux.Handle("GET /api/v1/state", a(http.HandlerFunc(s.handleState)))

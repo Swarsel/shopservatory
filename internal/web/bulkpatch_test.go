@@ -24,6 +24,7 @@ import (
 type patchEnv struct {
 	ts      *httptest.Server
 	st      *store.Store
+	srv     *Server
 	client  *http.Client
 	session *http.Cookie
 }
@@ -65,7 +66,7 @@ func newPatchEnv(t *testing.T) *patchEnv {
 	if session == nil {
 		t.Fatal("no session cookie")
 	}
-	return &patchEnv{ts: ts, st: st, client: client, session: session}
+	return &patchEnv{ts: ts, st: st, srv: srv, client: client, session: session}
 }
 
 func (e *patchEnv) patch(t *testing.T, form url.Values) (int, string) {
