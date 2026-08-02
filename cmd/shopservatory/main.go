@@ -97,7 +97,15 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("build http client: %w", err)
 	}
-	registry := source.NewRegistry(cfg, client, log)
+	jpClient, err := source.NewJPClient(cfg.Scrape, log)
+	if err != nil {
+		return fmt.Errorf("init japan proxy client: %w", err)
+	}
+	if jpClient != nil {
+		log.Info("japan proxy enabled for yahooauctions and paypayfleamarket", "proxy", cfg.Scrape.JPProxyURL)
+	}
+
+	registry := source.NewRegistryWithJP(cfg, client, jpClient, log)
 	log.Info("sources registered", "ids", registry.IDs())
 
 	conv := fx.New(cfg.Currency.Target, log)

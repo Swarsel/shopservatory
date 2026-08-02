@@ -2,7 +2,10 @@ package source
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -15,20 +18,143 @@ import (
 
 type payPayFleaMarket struct {
 	client *Client
+	jp     *Client
+	log    *slog.Logger
 }
 
-func newPayPayFleaMarket(client *Client) *payPayFleaMarket {
-	return &payPayFleaMarket{client: client}
+func newPayPayFleaMarket(client, jp *Client, log *slog.Logger) *payPayFleaMarket {
+	return &payPayFleaMarket{client: client, jp: jp, log: log}
 }
 
 func (p *payPayFleaMarket) ID() string          { return "paypayfleamarket" }
 func (p *payPayFleaMarket) DisplayName() string { return "PayPay Flea Market" }
 
 func (p *payPayFleaMarket) Search(ctx context.Context, spec SearchSpec) ([]Listing, error) {
-	if spec.Param("direct") == "1" {
-		return p.searchDirect(ctx, spec)
+	if p.jp != nil {
+		listings, err := p.searchAPI(ctx, spec)
+		if err == nil {
+			return listings, nil
+		}
+		if p.log != nil {
+			p.log.Warn("paypayfleamarket: direct search failed, falling back to buyee", "err", err)
+		}
 	}
 	return p.searchBuyee(ctx, spec)
+}
+
+func (p *payPayFleaMarket) searchAPI(ctx context.Context, spec SearchSpec) ([]Listing, error) {
+	q := url.Values{}
+	q.Set("query", spec.Query)
+	q.Set("results", "100")
+	q.Set("sort", "openTime")
+	q.Set("order", "DESC")
+	if spec.MinPrice != nil && *spec.MinPrice > 0 {
+		q.Set("minPrice", strconv.FormatFloat(*spec.MinPrice, 'f', -1, 64))
+	}
+	if spec.MaxPrice != nil && *spec.MaxPrice > 0 {
+		q.Set("maxPrice", strconv.FormatFloat(*spec.MaxPrice, 'f', -1, 64))
+	}
+	endpoint := "https://paypayfleamarket.yahoo.co.jp/api/v1/search?" + q.Encode()
+
+	body, err := p.jp.GetBody(ctx, endpoint, map[string]string{
+		"Accept":          "application/json",
+		"Accept-Language": "ja-JP,ja;q=0.9",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("paypayfleamarket(direct): fetch: %w", err)
+	}
+
+	var payload payPaySearchResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("paypayfleamarket(direct): decode: %w", err)
+	}
+	if len(payload.Items) == 0 {
+		return nil, errPayPayNoItems
+	}
+
+	var listings []Listing
+	for _, it := range payload.Items {
+		if it.ID == "" || it.Title == "" {
+			continue
+		}
+		if !withinPriceBounds(spec, float64(it.Price)) {
+			continue
+		}
+		extra := map[string]string{}
+		if it.Category.ID != 0 {
+			extra["category"] = strconv.Itoa(it.Category.ID)
+		}
+		if chain := it.Category.chain(); chain != "" {
+			extra["categories"] = chain
+		}
+		if it.Condition != "" {
+			extra["condition"] = it.Condition
+		}
+		listings = append(listings, Listing{
+			ExternalID: it.ID,
+			Title:      collapseSpaces(it.Title),
+			Price:      float64(it.Price),
+			Currency:   "JPY",
+			URL:        "https://paypayfleamarket.yahoo.co.jp/item/" + it.ID,
+			ImageURL:   it.ThumbnailImageURL,
+			ListedAt:   parsePayPayTime(it.OpenTime),
+			Extra:      extra,
+		})
+	}
+	return listings, nil
+}
+
+var errPayPayNoItems = errors.New("paypayfleamarket(direct): no items in response")
+
+type payPayCategoryNode struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type payPayCategory struct {
+	ID   int                  `json:"id"`
+	Name string               `json:"name"`
+	Path []payPayCategoryNode `json:"path"`
+}
+
+func (c payPayCategory) chain() string {
+	var ids []string
+	for _, n := range c.Path {
+		if n.ID != 0 {
+			ids = append(ids, strconv.Itoa(n.ID))
+		}
+	}
+	if c.ID != 0 && (len(ids) == 0 || ids[len(ids)-1] != strconv.Itoa(c.ID)) {
+		ids = append(ids, strconv.Itoa(c.ID))
+	}
+	return strings.Join(ids, ",")
+}
+
+type payPayItem struct {
+	ID                string         `json:"id"`
+	Title             string         `json:"title"`
+	Price             int            `json:"price"`
+	ItemStatus        string         `json:"itemStatus"`
+	Condition         string         `json:"condition"`
+	OpenTime          string         `json:"openTime"`
+	ThumbnailImageURL string         `json:"thumbnailImageUrl"`
+	Category          payPayCategory `json:"category"`
+}
+
+type payPaySearchResponse struct {
+	TotalResultsAvailable int          `json:"totalResultsAvailable"`
+	Items                 []payPayItem `json:"items"`
+}
+
+func parsePayPayTime(v string) time.Time {
+	if v == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 func (p *payPayFleaMarket) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {

@@ -151,11 +151,22 @@ type Client struct {
 }
 
 func NewClient(cfg config.Scrape, log *slog.Logger) (*Client, error) {
+	return newClientWithProxy(cfg, cfg.ProxyURL, "scrape.proxy_url", log)
+}
+
+func NewJPClient(cfg config.Scrape, log *slog.Logger) (*Client, error) {
+	if cfg.JPProxyURL == "" {
+		return nil, nil
+	}
+	return newClientWithProxy(cfg, cfg.JPProxyURL, "scrape.jp_proxy_url", log)
+}
+
+func newClientWithProxy(cfg config.Scrape, proxyURL, field string, log *slog.Logger) (*Client, error) {
 	transport := &http.Transport{}
-	if cfg.ProxyURL != "" {
-		u, err := url.Parse(cfg.ProxyURL)
+	if proxyURL != "" {
+		u, err := url.Parse(proxyURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse scrape.proxy_url: %w", err)
+			return nil, fmt.Errorf("parse %s: %w", field, err)
 		}
 		transport.Proxy = http.ProxyURL(u)
 	}
@@ -243,12 +254,16 @@ type Registry struct {
 }
 
 func NewRegistry(cfg config.Config, client *Client, log *slog.Logger) *Registry {
+	return NewRegistryWithJP(cfg, client, nil, log)
+}
+
+func NewRegistryWithJP(cfg config.Config, client, jp *Client, log *slog.Logger) *Registry {
 	r := &Registry{sources: map[string]Source{}}
 
 	r.add(newMercari(client))
 	r.add(newSnkrdunk(client))
 	r.add(newSurugaya(client))
-	r.add(newPayPayFleaMarket(client))
+	r.add(newPayPayFleaMarket(client, jp, log))
 	r.add(newWillhaben(client))
 	r.add(newVinted(client))
 	r.add(newKleinanzeigen(client))
@@ -258,7 +273,7 @@ func NewRegistry(cfg config.Config, client *Client, log *slog.Logger) *Registry 
 	r.add(newJmty(client))
 	r.add(newRakuma(client))
 	r.add(newMagi(client))
-	r.add(newYahooAuctions(client))
+	r.add(newYahooAuctions(client, jp, log))
 	r.add(newRicardo(client))
 	r.add(newAuctionet(client))
 

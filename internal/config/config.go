@@ -81,6 +81,8 @@ type Scrape struct {
 
 	ProxyURL string `toml:"proxy_url"`
 
+	JPProxyURL string `toml:"jp_proxy_url"`
+
 	Timeout Duration `toml:"timeout"`
 
 	BrowserPath string `toml:"browser_path"`
