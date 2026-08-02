@@ -263,18 +263,28 @@ func yahooNativeSnapshot(body []byte) (ItemSnapshot, bool) {
 	if !ok {
 		return ItemSnapshot{}, false
 	}
-	m := yahooOfferPrice.FindSubmatch(body)
-	if m == nil {
-		return ItemSnapshot{}, false
+
+	snap, ok := snapshotFromLDJSON(body)
+	if !ok || snap.Price <= 0 {
+		m := yahooOfferPrice.FindSubmatch(body)
+		if m == nil {
+			return ItemSnapshot{}, false
+		}
+		price, err := strconv.ParseFloat(string(m[1]), 64)
+		if err != nil || price <= 0 {
+			return ItemSnapshot{}, false
+		}
+		snap.Price = price
 	}
-	price, err := strconv.ParseFloat(string(m[1]), 64)
-	if err != nil || price <= 0 {
-		return ItemSnapshot{}, false
+	if snap.Currency == "" {
+		snap.Currency = "JPY"
 	}
-	return ItemSnapshot{
-		Price: price, Currency: "JPY", Status: "active",
-		SaleType: "auction", EndsAt: ends,
-	}, true
+	if snap.Status == "" {
+		snap.Status = "active"
+	}
+	snap.SaleType = "auction"
+	snap.EndsAt = ends
+	return snap, true
 }
 
 func yahooAuctionsURL(spec SearchSpec) string {

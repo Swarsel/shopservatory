@@ -100,6 +100,13 @@ func (s *Store) SourceExclusions(ctx context.Context, userID int64) (map[string]
 }
 
 func (s *Store) SetSourceExclusion(ctx context.Context, userID int64, e SourceExclusion) error {
+	if err := s.setSourceExclusion(ctx, userID, e); err != nil {
+		return err
+	}
+	return s.RefreshFeedExclusions(ctx, userID)
+}
+
+func (s *Store) setSourceExclusion(ctx context.Context, userID int64, e SourceExclusion) error {
 	if strings.TrimSpace(e.Exclude) == "" && strings.TrimSpace(e.ExcludeCategories) == "" {
 		_, err := s.db.ExecContext(ctx,
 			`UPDATE source_exclusions SET exclude = '', exclude_categories = ''

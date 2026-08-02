@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -957,5 +958,565 @@ func TestPausedColumnMigratesOntoOldDB(t *testing.T) {
 	}
 	if p, _ := st.PausedSources(ctx, 1); !p["mercari"] {
 		t.Fatal("pausing must work after migration")
+	}
+}
+
+func TestHideListingRemovesItFromTheFeed(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-hd", "hd@example.com", "Hd")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	now := time.Now()
+	for _, id := range []string{"keep1", "hideme", "keep2"} {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: id, Title: "item " + id, Price: 100, Currency: "JPY",
+			URL: "https://example.com/" + id,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	feedIDs := func() []string {
+		t.Helper()
+		list, _, err := st.ListingsPage(ctx, u.ID, "", nil, 50, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(list))
+		for _, l := range list {
+			out = append(out, l.ExternalID)
+		}
+		return out
+	}
+	hiddenIDs := func() []string {
+		t.Helper()
+		list, _, err := st.HiddenListingsPage(ctx, u.ID, 50, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(list))
+		for _, l := range list {
+			out = append(out, l.ExternalID)
+		}
+		return out
+	}
+
+	if len(feedIDs()) != 3 || len(hiddenIDs()) != 0 {
+		t.Fatalf("baseline wrong: feed=%v hidden=%v", feedIDs(), hiddenIDs())
+	}
+
+	n, err := st.SetListingHidden(ctx, u.ID, "mercari", "hideme", true)
+	if err != nil || n != 1 {
+		t.Fatalf("hide: n=%d err=%v", n, err)
+	}
+
+	feed := feedIDs()
+	for _, id := range feed {
+		if id == "hideme" {
+			t.Error("a hidden item must not appear in the feed")
+		}
+	}
+	if len(feed) != 2 {
+		t.Errorf("feed = %v, want 2 items", feed)
+	}
+	if got := hiddenIDs(); len(got) != 1 || got[0] != "hideme" {
+		t.Errorf("hidden = %v, want [hideme]", got)
+	}
+
+	if _, err := st.SetListingHidden(ctx, u.ID, "mercari", "hideme", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(feedIDs()) != 3 || len(hiddenIDs()) != 0 {
+		t.Errorf("unhiding should restore it: feed=%v hidden=%v", feedIDs(), hiddenIDs())
+	}
+}
+
+func TestHiddenListingsAreNotSearchable(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-hs", "hs@example.com", "Hs")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	now := time.Now()
+	for _, id := range []string{"pika1", "pika2"} {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: id, Title: "pikachu " + id, Price: 100, Currency: "JPY",
+			URL: "https://example.com/" + id,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.SetListingHidden(ctx, u.ID, "mercari", "pika1", true); err != nil {
+		t.Fatal(err)
+	}
+
+	list, total, err := st.ListingsPage(ctx, u.ID, "pikachu", nil, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(list) != 1 || list[0].ExternalID != "pika2" {
+		t.Fatalf("a filtered search must skip hidden items: total=%d list=%v", total, list)
+	}
+}
+
+func TestHidingAppliesAcrossDuplicateSearches(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-hdup", "hdup@example.com", "Hdup")
+	now := time.Now()
+	var sids []int64
+	for i := 0; i < 2; i++ {
+		sid, _ := st.CreateSearch(ctx, Search{
+			UserID: u.ID, Source: "mercari", Query: fmt.Sprintf("q%d", i),
+			Interval: time.Minute, Enabled: true,
+		})
+		sids = append(sids, sid)
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: "shared", Title: "shared item", Price: 100, Currency: "JPY",
+			URL: "https://example.com/shared",
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := st.SetListingHidden(ctx, u.ID, "mercari", "shared", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("hiding should affect every copy of the item, got %d rows", n)
+	}
+	list, _, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0)
+	if len(list) != 0 {
+		t.Fatalf("the item must be hidden even though a second search also found it: %v", list)
+	}
+	if h, _, _ := st.HiddenListingsPage(ctx, u.ID, 50, 0); len(h) != 1 {
+		t.Fatalf("hidden section should show it once, got %d", len(h))
+	}
+	_ = sids
+}
+
+func TestHidingIsScopedToTheOwner(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	a, _ := st.UserFromIdentity(ctx, "sub-ha", "ha@example.com", "A")
+	b, _ := st.UserFromIdentity(ctx, "sub-hb", "hb@example.com", "B")
+	now := time.Now()
+	for _, u := range []User{a, b} {
+		sid, _ := st.CreateSearch(ctx, Search{
+			UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+		})
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: "same", Title: "same item", Price: 1, Currency: "JPY",
+			URL: "https://example.com/same",
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := st.SetListingHidden(ctx, a.ID, "mercari", "same", true); err != nil {
+		t.Fatal(err)
+	}
+	if list, _, _ := st.ListingsPage(ctx, a.ID, "", nil, 50, 0); len(list) != 0 {
+		t.Error("user A should no longer see the item")
+	}
+	if list, _, _ := st.ListingsPage(ctx, b.ID, "", nil, 50, 0); len(list) != 1 {
+		t.Error("user B must be unaffected by user A hiding an item")
+	}
+}
+
+func TestHiddenColumnMigratesOntoOldListings(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/oldlist.db"
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE);
+		CREATE TABLE searches (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, source TEXT,
+		                       query TEXT, params TEXT DEFAULT '{}', interval_seconds INTEGER DEFAULT 300,
+		                       enabled INTEGER DEFAULT 1, created_at INTEGER DEFAULT 0);
+		CREATE TABLE listings (
+		    id INTEGER PRIMARY KEY AUTOINCREMENT, search_id INTEGER NOT NULL,
+		    source TEXT NOT NULL, external_id TEXT NOT NULL, title TEXT NOT NULL,
+		    price REAL DEFAULT 0, currency TEXT DEFAULT '', url TEXT DEFAULT '',
+		    image_url TEXT DEFAULT '', sale_type TEXT DEFAULT '', extra TEXT DEFAULT '{}',
+		    first_seen INTEGER NOT NULL, notified INTEGER DEFAULT 0,
+		    UNIQUE(search_id, external_id));
+		INSERT INTO users (name, email) VALUES ('Old','old@example.com');
+		INSERT INTO searches (id, user_id, source, query) VALUES (1, 1, 'mercari', 'q');
+		INSERT INTO listings (search_id, source, external_id, title, first_seen)
+		     VALUES (1, 'mercari', 'legacy1', 'legacy item', 1000);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("opening a pre-existing db must migrate cleanly: %v", err)
+	}
+	defer st.Close()
+
+	list, total, err := st.ListingsPage(ctx, 1, "", nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(list) != 1 || list[0].ExternalID != "legacy1" {
+		t.Fatalf("existing listings must stay visible: total=%d list=%v", total, list)
+	}
+	if h, ht, _ := st.HiddenListingsPage(ctx, 1, 10, 0); ht != 0 || len(h) != 0 {
+		t.Fatal("pre-existing listings must default to not hidden")
+	}
+	if _, err := st.SetListingHidden(ctx, 1, "mercari", "legacy1", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ht, _ := st.HiddenListingsPage(ctx, 1, 10, 0); ht != 1 {
+		t.Fatal("hiding must work after migration")
+	}
+}
+
+func feedItemCount(t *testing.T, st *Store) int {
+	t.Helper()
+	var n int
+	if err := st.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM feed_items`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestFeedItemsStayConsistentWithListings(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-fi", "fi@example.com", "Fi")
+	now := time.Now()
+
+	s1, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "a", Interval: time.Minute, Enabled: true,
+	})
+	s2, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "b", Interval: time.Minute, Enabled: true,
+	})
+
+	rec := func(sid int64, extID string, seen time.Time) {
+		t.Helper()
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: extID, Title: "item " + extID, Price: 10, Currency: "JPY",
+			URL: "https://example.com/" + extID,
+		}, seen); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec(s1, "only1", now)
+	rec(s1, "shared", now)
+	rec(s2, "shared", now.Add(time.Hour))
+	rec(s2, "only2", now)
+
+	if got := feedItemCount(t, st); got != 3 {
+		t.Fatalf("feed_items should hold one row per distinct item, got %d", got)
+	}
+	list, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0)
+	if total != 3 || len(list) != 3 {
+		t.Fatalf("feed should show 3 items, got total=%d len=%d", total, len(list))
+	}
+
+	if _, err := st.db.ExecContext(ctx,
+		`DELETE FROM listings WHERE search_id = ? AND external_id = 'shared'`, s2); err != nil {
+		t.Fatal(err)
+	}
+	if got := feedItemCount(t, st); got != 3 {
+		t.Fatalf("removing one copy of a shared item must keep the item, got %d rows", got)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 3 {
+		t.Errorf("shared item should still be visible via its other search, total=%d", total)
+	}
+
+	if _, err := st.db.ExecContext(ctx,
+		`DELETE FROM listings WHERE search_id = ? AND external_id = 'shared'`, s1); err != nil {
+		t.Fatal(err)
+	}
+	if got := feedItemCount(t, st); got != 2 {
+		t.Fatalf("removing the last copy must drop the item, got %d rows", got)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 2 {
+		t.Errorf("total after removing shared = %d, want 2", total)
+	}
+}
+
+func TestFeedItemsFollowSearchDeletion(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-fd", "fd@example.com", "Fd")
+	now := time.Now()
+
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	for _, id := range []string{"d1", "d2"} {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: id, Title: "x", Price: 1, Currency: "JPY", URL: "https://e/" + id,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if feedItemCount(t, st) != 2 {
+		t.Fatal("baseline wrong")
+	}
+
+	if _, err := st.DeleteSearches(ctx, u.ID, []int64{sid}); err != nil {
+		t.Fatal(err)
+	}
+	if got := feedItemCount(t, st); got != 0 {
+		t.Fatalf("deleting a search must cascade into feed_items, got %d rows", got)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 0 {
+		t.Errorf("feed should be empty, total=%d", total)
+	}
+}
+
+func TestFeedItemsFollowRepopulate(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-fr", "fr@example.com", "Fr")
+	now := time.Now()
+
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+		ExternalID: "r1", Title: "x", Price: 1, Currency: "JPY", URL: "https://e/r1",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RepopulateSearch(ctx, sid); err != nil {
+		t.Fatal(err)
+	}
+	if got := feedItemCount(t, st); got != 0 {
+		t.Fatalf("repopulate must clear feed_items too, got %d", got)
+	}
+	if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+		ExternalID: "r1", Title: "x again", Price: 2, Currency: "JPY", URL: "https://e/r1",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := feedItemCount(t, st); got != 1 {
+		t.Fatalf("re-fetched item should reappear once, got %d", got)
+	}
+}
+
+func TestFeedItemsHiddenSyncsThroughTrigger(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-fh", "fh@example.com", "Fh")
+	now := time.Now()
+
+	var sids []int64
+	for i := 0; i < 2; i++ {
+		sid, _ := st.CreateSearch(ctx, Search{
+			UserID: u.ID, Source: "mercari", Query: fmt.Sprintf("q%d", i),
+			Interval: time.Minute, Enabled: true,
+		})
+		sids = append(sids, sid)
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: "dup", Title: "shared", Price: 1, Currency: "JPY", URL: "https://e/dup",
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := st.SetListingHidden(ctx, u.ID, "mercari", "dup", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 0 {
+		t.Errorf("hidden item must leave the feed, total=%d", total)
+	}
+	if _, total, _ := st.HiddenListingsPage(ctx, u.ID, 50, 0); total != 1 {
+		t.Errorf("hidden section should show it once, total=%d", total)
+	}
+
+	if _, err := st.SetListingHidden(ctx, u.ID, "mercari", "dup", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 1 {
+		t.Errorf("unhidden item must return to the feed, total=%d", total)
+	}
+}
+
+func TestFeedItemsBackfillOnExistingDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/backfill.db"
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE);
+		CREATE TABLE searches (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, source TEXT,
+		                       query TEXT, params TEXT DEFAULT '{}', interval_seconds INTEGER DEFAULT 300,
+		                       enabled INTEGER DEFAULT 1, created_at INTEGER DEFAULT 0);
+		CREATE TABLE listings (
+		    id INTEGER PRIMARY KEY AUTOINCREMENT, search_id INTEGER NOT NULL,
+		    source TEXT NOT NULL, external_id TEXT NOT NULL, title TEXT NOT NULL,
+		    price REAL DEFAULT 0, currency TEXT DEFAULT '', url TEXT DEFAULT '',
+		    image_url TEXT DEFAULT '', sale_type TEXT DEFAULT '', extra TEXT DEFAULT '{}',
+		    first_seen INTEGER NOT NULL, notified INTEGER DEFAULT 0,
+		    UNIQUE(search_id, external_id));
+		INSERT INTO users (name, email) VALUES ('Old','old@example.com');
+		INSERT INTO searches (id, user_id, source, query) VALUES (1, 1, 'mercari', 'a'), (2, 1, 'mercari', 'b');
+		INSERT INTO listings (search_id, source, external_id, title, first_seen) VALUES
+		    (1, 'mercari', 'x1', 'one', 1000),
+		    (1, 'mercari', 'dup', 'shared', 1100),
+		    (2, 'mercari', 'dup', 'shared', 1200),
+		    (2, 'mercari', 'x2', 'two', 1300);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("migrating an existing db must succeed: %v", err)
+	}
+	defer st.Close()
+
+	if got := feedItemCount(t, st); got != 3 {
+		t.Fatalf("backfill should produce one row per distinct item, got %d", got)
+	}
+	list, total, err := st.ListingsPage(ctx, 1, "", nil, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(list) != 3 {
+		t.Fatalf("feed after backfill: total=%d len=%d want 3", total, len(list))
+	}
+	seen := map[string]int{}
+	for _, l := range list {
+		seen[l.ExternalID]++
+	}
+	if seen["dup"] != 1 {
+		t.Errorf("the shared item must appear exactly once, got %d", seen["dup"])
+	}
+}
+
+func TestFeedItemsCatPathFollowsEnrichment(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-cp", "cp@example.com", "Cp")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	rec, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+		ExternalID: "e1", Title: "item", Price: 10, Currency: "JPY", URL: "https://e/1",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "mercari", ExcludeCategories: "3088",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 1 {
+		t.Fatal("item with no category should be visible")
+	}
+
+	if err := st.UpdateListingMarket(ctx, rec.ID, 20, "", map[string]string{
+		"category": "3088", "categories": "1,3088",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 0 {
+		t.Error("after enrichment adds an excluded category the item must drop out of the feed")
+	}
+}
+
+func TestNewListingIsExcludedImmediately(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-nx", "nx@example.com", "Nx")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "mercari", Exclude: "ONE PIECE", ExcludeCategories: "3088",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+		ExternalID: "ok1", Title: "pikachu card", Price: 1, Currency: "JPY", URL: "https://e/1",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+		ExternalID: "bad1", Title: "ONE PIECE luffy", Price: 1, Currency: "JPY", URL: "https://e/2",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+		ExternalID: "bad2", Title: "fashion thing", Price: 1, Currency: "JPY", URL: "https://e/3",
+		Extra: map[string]string{"category": "3088"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	list, total, err := st.ListingsPage(ctx, u.ID, "", nil, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(list) != 1 || list[0].ExternalID != "ok1" {
+		ids := make([]string, 0, len(list))
+		for _, l := range list {
+			ids = append(ids, l.ExternalID)
+		}
+		t.Fatalf("a newly recorded excluded listing must never reach the feed: total=%d ids=%v", total, ids)
+	}
+}
+
+func TestExclusionChangesTakeEffectBothWays(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	u, _ := st.UserFromIdentity(ctx, "sub-eb", "eb@example.com", "Eb")
+	sid, _ := st.CreateSearch(ctx, Search{
+		UserID: u.ID, Source: "mercari", Query: "q", Interval: time.Minute, Enabled: true,
+	})
+	now := time.Now()
+	for _, tc := range []struct{ id, title string }{
+		{"a", "pikachu"}, {"b", "ONE PIECE luffy"},
+	} {
+		if _, _, err := st.RecordListing(ctx, sid, "mercari", source.Listing{
+			ExternalID: tc.id, Title: tc.title, Price: 1, Currency: "JPY", URL: "https://e/" + tc.id,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 2 {
+		t.Fatal("baseline should show both")
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{
+		Source: "mercari", Exclude: "ONE PIECE",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 1 {
+		t.Error("adding an exclusion must hide the matching item")
+	}
+
+	if err := st.SetSourceExclusion(ctx, u.ID, SourceExclusion{Source: "mercari"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListingsPage(ctx, u.ID, "", nil, 50, 0); total != 2 {
+		t.Error("removing an exclusion must bring the item back")
 	}
 }

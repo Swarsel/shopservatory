@@ -11,6 +11,7 @@ import (
 
 const yahooItemHTML = `<html><head>
 <script type="application/ld+json">{"@type":"Product","name":"card",
+"image":["https://auctions.c.yimg.jp/img/i-img900x1200-1.jpg"],
 "offers":{"priceCurrency":"JPY","price":"770000","priceValidUntil":"2026-08-08T16:00:52+09:00","availability":"https://schema.org/InStock"}}</script>
 <script>window.__PRELOADED__={"saleCampaign":{"items":[{"campaignType":"FIRST_BID_CAMPAIGN","endTime":"2026-08-31T23:59:59+09:00"}]},
 "startTime":"2026-08-01T11:25:02+09:00","endTime":"2026-08-08T16:00:52+09:00","leftTime":538013.777}</script>
@@ -46,6 +47,25 @@ func TestYahooEndTimeMissingOrInvalid(t *testing.T) {
 	}
 	if _, ok := yahooEndTime([]byte(`{"priceValidUntil":"not-a-date"}`)); ok {
 		t.Error("an unparseable date must not be reported as found")
+	}
+}
+
+func TestYahooNativeSnapshotIncludesTitleAndImage(t *testing.T) {
+	snap, ok := yahooNativeSnapshot([]byte(yahooItemHTML))
+	if !ok {
+		t.Fatal("native snapshot should parse")
+	}
+	if snap.Title == "" {
+		t.Error("a monitored yahoo item must get a title or the row renders blank")
+	}
+	if snap.ImageURL == "" {
+		t.Error("a monitored yahoo item must get an image url or no thumbnail appears")
+	}
+	if snap.Title != "card" {
+		t.Errorf("title = %q", snap.Title)
+	}
+	if snap.ImageURL != "https://auctions.c.yimg.jp/img/i-img900x1200-1.jpg" {
+		t.Errorf("imageUrl = %q", snap.ImageURL)
 	}
 }
 

@@ -24,6 +24,7 @@ const pageTemplate = `<!doctype html>
   fieldset { border: 1px solid #8884; border-radius: 8px; }
   label { display: block; margin: .4rem 0 .1rem; font-size: .85rem; }
   input, select, textarea { width: 100%; padding: .35rem; box-sizing: border-box; }
+  textarea.autogrow { resize: vertical; overflow: hidden; min-height: 0; line-height: 1.45; font-family: inherit; }
   .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: .6rem; }
   .row3 { grid-template-columns: repeat(3, 1fr); }
   @media (max-width: 640px) { .row, .row3 { grid-template-columns: 1fr; } }
@@ -86,7 +87,7 @@ const pageTemplate = `<!doctype html>
       </div>
       <div class="row">
         <div><label>Interval</label><input name="interval" id="f-interval" placeholder="default (e.g. 5m, 1h)"></div>
-        <div><label>Params (key=value per line)</label><textarea name="params" id="f-params" rows="2" placeholder="sort=newlyListed"></textarea></div>
+        <div><label>Params (key=value per line)</label><textarea name="params" id="f-params" class="autogrow" rows="1" placeholder="sort=newlyListed"></textarea></div>
       </div>
       <p>
         <button type="submit" id="f-submit">Add search</button>
@@ -131,7 +132,7 @@ const pageTemplate = `<!doctype html>
       <label>Params (key=value per line) <span class="muted">(tick to apply; in merge mode an empty value removes a key)</span></label>
       <div class="feedbar" style="align-items:flex-start">
         <input type="checkbox" id="be-params-on">
-        <textarea id="be-params" rows="3" placeholder="sort=newlyListed"></textarea>
+        <textarea id="be-params" class="autogrow" rows="1" placeholder="sort=newlyListed"></textarea>
         <select id="be-params-mode">
           <option value="merge">merge with existing</option>
           <option value="replace">replace all params</option>
@@ -265,6 +266,11 @@ const pageTemplate = `<!doctype html>
     <span class="muted" id="feed-pageinfo2"></span>
     <button type="button" id="feed-next2">next ›</button>
   </div>
+  <h3 class="fold-h" id="hidden-head" style="display:none">▸ Hidden finds</h3>
+  <div id="hidden-wrap" style="display:none">
+    <p class="muted">These are kept out of the feed and out of filtering. Thumbnails load only while this section is open.</p>
+    <div class="grid" id="hidden-feed"></div>
+  </div>
 
   <p class="muted" style="margin-top:2rem">shopservatory · live feed</p>
 
@@ -330,6 +336,21 @@ const pageTemplate = `<!doctype html>
     function action(url) { return fetch(url, {method:'POST'}).then(refresh).catch(function(){}); }
 
     function btn(label, fn) { var b=el('button',null,label); b.type='button'; b.onclick=fn; return b; }
+
+    function autoGrow(ta) {
+      if (!ta) return;
+      ta.style.height = 'auto';
+      ta.style.height = (ta.scrollHeight + 2) + 'px';
+    }
+    function initAutoGrow() {
+      Array.prototype.forEach.call(document.querySelectorAll('textarea.autogrow'), function(ta){
+        if (!ta.dataset.grow) {
+          ta.dataset.grow = '1';
+          ta.addEventListener('input', function(){ autoGrow(ta); });
+        }
+        autoGrow(ta);
+      });
+    }
 
     var selectedSearches = {};
 
@@ -522,6 +543,7 @@ const pageTemplate = `<!doctype html>
       document.getElementById('be-params-mode').value = 'merge';
       document.getElementById('be-status').textContent = '';
       document.getElementById('bulkedit').style.display = '';
+      autoGrow(document.getElementById('be-params'));
     }
     function closeBulkEdit(){ document.getElementById('bulkedit').style.display = 'none'; }
 
@@ -565,6 +587,7 @@ const pageTemplate = `<!doctype html>
       document.getElementById('f-interval').value = se.interval;
       var pk = se.params ? Object.keys(se.params) : [];
       document.getElementById('f-params').value = pk.map(function(k){return k+'='+se.params[k];}).join('\n');
+      autoGrow(document.getElementById('f-params'));
       document.getElementById('search-form').action = '/searches/' + se.id + '/update';
       document.getElementById('f-submit').textContent = 'Update search';
       document.getElementById('f-cancel').style.display = '';
@@ -573,6 +596,7 @@ const pageTemplate = `<!doctype html>
     function resetForm() {
       document.getElementById('form-title').textContent = 'New search';
       var f = document.getElementById('search-form'); f.reset(); f.action = '/searches';
+      autoGrow(document.getElementById('f-params'));
       document.getElementById('f-sources-hint').textContent = '(select one or more to create a search per source)';
       document.getElementById('f-submit').textContent = 'Add search';
       document.getElementById('f-cancel').style.display = 'none';
@@ -992,10 +1016,12 @@ const pageTemplate = `<!doctype html>
       }
     }
 
-    function card(item) {
+    function card(item, noThumb) {
       var c = el('div', 'card');
       var a = el('a'); a.href=item.url; a.target='_blank'; a.rel='noopener';
-      if (item.imageUrl) {
+      if (noThumb) {
+        a.appendChild(el('div','noimg','hidden'));
+      } else if (item.imageUrl) {
         var img = el('img'); img.src='/img?u='+encodeURIComponent(item.imageUrl); img.loading='lazy'; img.alt='';
         img.dataset.tries = '0';
         img.onerror = function(){
@@ -1033,8 +1059,28 @@ const pageTemplate = `<!doctype html>
         dz.onclick = function(){ window.open(item.doorzoUrl, '_blank', 'noopener'); };
         body.appendChild(dz);
       }
+      var hb = el('button','cardbtn', noThumb ? '\u{1F441}' : '\u{1F441}\u{200D}\u{1F5E8}');
+      hb.type='button';
+      hb.style.marginLeft = '.3rem';
+      hb.title = noThumb ? 'Unhide — show this in the feed again' : 'Hide this find from the feed';
+      hb.onclick = function(){ hideItem(item, hb, !noThumb); };
+      body.appendChild(hb);
       c.appendChild(body);
       return c;
+    }
+
+    function hideItem(item, btn, hide) {
+      var f = new URLSearchParams();
+      f.set('source', item.source || '');
+      f.set('external_id', item.externalId || '');
+      f.set('hidden', hide ? '1' : '0');
+      if (btn) btn.disabled = true;
+      fetch('/listings/hide', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:f.toString()})
+        .then(function(r){
+          if (r.status===204 || r.ok) { refresh(); }
+          else { if (btn) btn.disabled = false; alert(hide ? 'Could not hide that find' : 'Could not unhide that find'); }
+        })
+        .catch(function(){ if (btn) btn.disabled = false; });
     }
 
     function monitorItem(item, btn) {
@@ -1056,7 +1102,7 @@ const pageTemplate = `<!doctype html>
     function renderFeed(list, total, page, pages) {
       feedPage = page;
       var feed = document.getElementById('feed');
-      feed.replaceChildren.apply(feed, list.map(card));
+      feed.replaceChildren.apply(feed, list.map(function(item){ return card(item, false); }));
       document.getElementById('feed-empty').style.display = total ? 'none' : '';
       document.getElementById('feed-status').textContent =
         '· ' + total + (feedFilter ? ' matching' : '') + ' · updated ' + new Date().toLocaleTimeString();
@@ -1069,10 +1115,27 @@ const pageTemplate = `<!doctype html>
       document.getElementById('feed-pager-bottom').style.display = pages > 1 ? '' : 'none';
     }
 
+    var hiddenOpen = false;
+    function renderHidden(list, total) {
+      var head = document.getElementById('hidden-head');
+      head.style.display = total ? '' : 'none';
+      head.textContent = (hiddenOpen ? '▾' : '▸') + ' Hidden finds (' + total + ')';
+      document.getElementById('hidden-wrap').style.display = total && hiddenOpen ? '' : 'none';
+      var box = document.getElementById('hidden-feed');
+      if (!hiddenOpen) { box.replaceChildren(); return; }
+      box.replaceChildren.apply(box, (list || []).map(function(item){ return card(item, true); }));
+    }
+
+    document.getElementById('hidden-head').onclick = function(){
+      hiddenOpen = !hiddenOpen;
+      refresh();
+    };
+
     function refresh() {
       var params = new URLSearchParams();
       params.set('page', feedPage);
       if (feedFilter) params.set('q', feedFilter);
+      if (hiddenOpen) params.set('hidden', '1');
       return fetch('/api/state?' + params.toString(), {headers:{'Accept':'application/json'}})
         .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
         .then(function(s){
@@ -1081,6 +1144,7 @@ const pageTemplate = `<!doctype html>
           Object.keys(ex).forEach(function(id){ if (ex[id].paused) pausedSources[id] = true; });
           renderSearches(s.searches||[]); renderMonitors(s.monitors||[]);
           renderFeed(s.listings||[], s.listingsTotal||0, s.listingsPage||1, s.listingsPages||1);
+          renderHidden(s.hidden||[], s.hiddenTotal||0);
           renderSettings(s.settings||{}); renderMe(s.me||{}); renderUsers(s.users||[]);
         })
         .catch(function(){});
@@ -1100,6 +1164,7 @@ const pageTemplate = `<!doctype html>
       document.getElementById('feed-next'+sfx).onclick = function(){ turnPage(1); };
     });
 
+    initAutoGrow();
     refresh();
     setInterval(refresh, INTERVAL);
     setInterval(tickCountdowns, 1000);

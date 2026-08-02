@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS listings (
     first_seen  INTEGER NOT NULL,
     listed_at   INTEGER,
     notified    INTEGER NOT NULL DEFAULT 0,
+    hidden      INTEGER NOT NULL DEFAULT 0,
     UNIQUE(search_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_listings_search_seen ON listings(search_id, first_seen DESC);
@@ -179,7 +180,178 @@ CREATE TABLE IF NOT EXISTS notification_targets (
 	if err := s.addColumnIfMissing(ctx, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return s.addColumnIfMissing(ctx, "source_exclusions", "paused", "INTEGER NOT NULL DEFAULT 0")
+	if err := s.addColumnIfMissing(ctx, "source_exclusions", "paused", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "listings", "hidden", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_listings_hidden_key ON listings(source, external_id) WHERE hidden = 1`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_listings_item ON listings(source, external_id, id)`); err != nil {
+		return err
+	}
+	return s.buildFeedItems(ctx)
+}
+
+const feedItemsSchema = `
+CREATE TABLE IF NOT EXISTS feed_items (
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    listing_id  INTEGER NOT NULL,
+    first_seen  INTEGER NOT NULL,
+    hidden      INTEGER NOT NULL DEFAULT 0,
+    cat_path    TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    excluded    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, source, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_feed_items_page ON feed_items(user_id, hidden, excluded, first_seen DESC, listing_id);
+CREATE INDEX IF NOT EXISTS idx_feed_items_listing ON feed_items(listing_id);
+
+CREATE TRIGGER IF NOT EXISTS feed_items_after_insert AFTER INSERT ON listings
+BEGIN
+    INSERT INTO feed_items (user_id, source, external_id, listing_id, first_seen, hidden, cat_path, title)
+    SELECT se.user_id, NEW.source, NEW.external_id, NEW.id, NEW.first_seen, NEW.hidden,
+           ',' || COALESCE(json_extract(NEW.extra, '$.category'), '') || ',' ||
+                  COALESCE(json_extract(NEW.extra, '$.categories'), '') || ',',
+           NEW.title
+    FROM searches se WHERE se.id = NEW.search_id
+    ON CONFLICT(user_id, source, external_id) DO UPDATE SET
+        listing_id = CASE WHEN excluded.listing_id < feed_items.listing_id
+                          THEN excluded.listing_id ELSE feed_items.listing_id END,
+        first_seen = MIN(feed_items.first_seen, excluded.first_seen),
+        cat_path = excluded.cat_path,
+        title = excluded.title;
+END;
+
+CREATE TRIGGER IF NOT EXISTS feed_items_after_delete AFTER DELETE ON listings
+BEGIN
+    DELETE FROM feed_items
+    WHERE listing_id = OLD.id
+      AND NOT EXISTS (
+        SELECT 1 FROM listings l2 JOIN searches se2 ON se2.id = l2.search_id
+        WHERE se2.user_id = feed_items.user_id
+          AND l2.source = feed_items.source
+          AND l2.external_id = feed_items.external_id
+      );
+
+    UPDATE feed_items SET
+        listing_id = (SELECT MIN(l2.id) FROM listings l2 JOIN searches se2 ON se2.id = l2.search_id
+                      WHERE se2.user_id = feed_items.user_id AND l2.source = feed_items.source
+                        AND l2.external_id = feed_items.external_id),
+        first_seen = (SELECT MIN(l2.first_seen) FROM listings l2 JOIN searches se2 ON se2.id = l2.search_id
+                      WHERE se2.user_id = feed_items.user_id AND l2.source = feed_items.source
+                        AND l2.external_id = feed_items.external_id)
+    WHERE listing_id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS feed_items_after_extra AFTER UPDATE OF extra ON listings
+BEGIN
+    UPDATE feed_items SET
+        cat_path = ',' || COALESCE(json_extract(NEW.extra, '$.category'), '') || ',' ||
+                          COALESCE(json_extract(NEW.extra, '$.categories'), '') || ','
+    WHERE listing_id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS feed_items_after_hide AFTER UPDATE OF hidden ON listings
+BEGIN
+    UPDATE feed_items SET hidden = NEW.hidden
+    WHERE source = NEW.source AND external_id = NEW.external_id
+      AND user_id = (SELECT se.user_id FROM searches se WHERE se.id = NEW.search_id);
+END;
+`
+
+func (s *Store) RefreshFeedExclusions(ctx context.Context, userID int64) error {
+	var conds []string
+	var args []any
+	for _, term := range s.excludedFeedTerms(ctx, userID) {
+		conds = append(conds, `title LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(term)+"%")
+	}
+	for src, cats := range s.excludedFeedCategories(ctx, userID) {
+		for _, cat := range cats {
+			conds = append(conds, `(source = ? AND cat_path LIKE ? ESCAPE '\')`)
+			args = append(args, src, "%,"+escapeLike(cat)+",%")
+		}
+	}
+
+	if len(conds) == 0 {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE feed_items SET excluded = 0 WHERE user_id = ? AND excluded = 1`, userID)
+		return err
+	}
+
+	pred := "(" + strings.Join(conds, " OR ") + ")"
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE feed_items SET excluded = 1 WHERE user_id = ? AND excluded = 0 AND `+pred,
+		append([]any{userID}, args...)...); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE feed_items SET excluded = 0 WHERE user_id = ? AND excluded = 1 AND NOT `+pred,
+		append([]any{userID}, args...)...)
+	return err
+}
+
+func (s *Store) refreshFeedExclusionsForSearch(ctx context.Context, searchID int64) error {
+	var userID int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT user_id FROM searches WHERE id = ?`, searchID).Scan(&userID); err != nil {
+		return nil
+	}
+	return s.RefreshFeedExclusions(ctx, userID)
+}
+
+func (s *Store) buildFeedItems(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, feedItemsSchema); err != nil {
+		return err
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feed_items`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO feed_items (user_id, source, external_id, listing_id, first_seen, hidden, cat_path, title)
+		 SELECT se.user_id, l.source, l.external_id, MIN(l.id), MIN(l.first_seen), MAX(l.hidden),
+		        ',' || COALESCE(json_extract(l.extra, '$.category'), '') || ',' ||
+		               COALESCE(json_extract(l.extra, '$.categories'), '') || ',',
+		        MIN(l.title)
+		 FROM listings l JOIN searches se ON se.id = l.search_id
+		 GROUP BY se.user_id, l.source, l.external_id`)
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT user_id FROM feed_items`)
+	if err != nil {
+		return err
+	}
+	var users []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		users = append(users, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range users {
+		if err := s.RefreshFeedExclusions(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) addColumnIfMissing(ctx context.Context, table, column, typ string) error {
@@ -355,7 +527,14 @@ func (s *Store) CreateSearch(ctx context.Context, se Search) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if se.Exclude != "" || se.ExcludeCategories != "" {
+		_ = s.RefreshFeedExclusions(ctx, se.UserID)
+	}
+	return id, nil
 }
 
 func (s *Store) UpdateSearch(ctx context.Context, se Search) error {
@@ -370,7 +549,10 @@ func (s *Store) UpdateSearch(ctx context.Context, se Search) error {
 		se.Source, se.Query, string(params), nullFloat(se.MinPrice), nullFloat(se.MaxPrice),
 		int64(se.Interval/time.Second), boolToInt(se.Enabled),
 		se.Exclude, se.ExcludeCategories, se.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.refreshFeedExclusionsForSearch(ctx, se.ID)
 }
 
 func (s *Store) SetSearchEnabled(ctx context.Context, id int64, enabled bool) error {
@@ -552,11 +734,41 @@ func (s *Store) RecordListing(ctx context.Context, searchID int64, src string, l
 		return Listing{}, false, nil
 	}
 	id, _ := res.LastInsertId()
+	if err := s.markFeedItemExcluded(ctx, id); err != nil {
+		return Listing{}, false, err
+	}
 	return Listing{
 		ID: id, SearchID: searchID, Source: src, ExternalID: l.ExternalID,
 		Title: l.Title, Price: l.Price, Currency: l.Currency, URL: l.URL,
 		ImageURL: l.ImageURL, SaleType: l.SaleType, Extra: l.Extra, FirstSeen: now, ListedAt: l.ListedAt,
 	}, true, nil
+}
+
+func (s *Store) markFeedItemExcluded(ctx context.Context, listingID int64) error {
+	var userID int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT user_id FROM feed_items WHERE listing_id = ?`, listingID).Scan(&userID); err != nil {
+		return nil
+	}
+	var conds []string
+	var args []any
+	for _, term := range s.excludedFeedTerms(ctx, userID) {
+		conds = append(conds, `title LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(term)+"%")
+	}
+	for src, cats := range s.excludedFeedCategories(ctx, userID) {
+		for _, cat := range cats {
+			conds = append(conds, `(source = ? AND cat_path LIKE ? ESCAPE '\')`)
+			args = append(args, src, "%,"+escapeLike(cat)+",%")
+		}
+	}
+	if len(conds) == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE feed_items SET excluded = 1 WHERE listing_id = ? AND (`+strings.Join(conds, " OR ")+`)`,
+		append([]any{listingID}, args...)...)
+	return err
 }
 
 func (s *Store) MarkNotified(ctx context.Context, id int64) error {
@@ -569,38 +781,37 @@ func (s *Store) UpdateListingMarket(ctx context.Context, id int64, price float64
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE listings SET price = ?, sale_type = ?, extra = ? WHERE id = ?`, price, saleType, string(encoded), id)
-	return err
+	if _, err = s.db.ExecContext(ctx, `UPDATE listings SET price = ?, sale_type = ?, extra = ? WHERE id = ?`, price, saleType, string(encoded), id); err != nil {
+		return err
+	}
+	var userID int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT f.user_id FROM feed_items f WHERE f.listing_id = ?`, id).Scan(&userID); err != nil {
+		return nil
+	}
+	return s.RefreshFeedExclusions(ctx, userID)
 }
 
 func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, sources []string, limit, offset int) ([]Listing, int, error) {
-	where := `se.user_id = ?
-	   AND l.id IN (
-	     SELECT MIN(l2.id) FROM listings l2
-	     JOIN searches se2 ON se2.id = l2.search_id
-	     WHERE se2.user_id = ?
-	     GROUP BY l2.source, l2.external_id
-	   )`
-	args := []any{userID, userID}
+	return s.listingsPage(ctx, userID, filter, sources, limit, offset, false)
+}
 
-	for _, term := range s.excludedFeedTerms(ctx, userID) {
-		where += ` AND l.title NOT LIKE ? ESCAPE '\'`
-		args = append(args, "%"+escapeLike(term)+"%")
+func (s *Store) HiddenListingsPage(ctx context.Context, userID int64, limit, offset int) ([]Listing, int, error) {
+	return s.listingsPage(ctx, userID, "", nil, limit, offset, true)
+}
+
+func (s *Store) listingsPage(ctx context.Context, userID int64, filter string, sources []string, limit, offset int, hidden bool) ([]Listing, int, error) {
+	where := `f.user_id = ? AND f.hidden = ?`
+	args := []any{userID, boolToInt(hidden)}
+	if !hidden {
+		where += ` AND f.excluded = 0`
 	}
-	for src, cats := range s.excludedFeedCategories(ctx, userID) {
-		for _, cat := range cats {
-			where += ` AND COALESCE(NOT (l.source = ? AND (
-				COALESCE(json_extract(l.extra, '$.category'), '') = ?
-				OR ',' || COALESCE(json_extract(l.extra, '$.categories'), '') || ',' LIKE ?
-			)), 1)`
-			args = append(args, src, cat, "%,"+escapeLike(cat)+",%")
-		}
-	}
+
 	if filter != "" {
-		clause := `(l.title LIKE ? ESCAPE '\'`
+		clause := `(f.title LIKE ? ESCAPE '\'`
 		args = append(args, "%"+escapeLike(filter)+"%")
 		for _, src := range sources {
-			clause += ` OR l.source = ?`
+			clause += ` OR f.source = ?`
 			args = append(args, src)
 		}
 		clause += `)`
@@ -609,16 +820,15 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 
 	var total int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM listings l JOIN searches se ON se.id = l.search_id WHERE `+where, args...).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM feed_items f WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT l.id, l.search_id, l.source, l.external_id, l.title, l.price, l.currency, l.url, l.image_url, l.sale_type, l.extra, l.first_seen, l.listed_at, l.notified
-		 FROM listings l
-		 JOIN searches se ON se.id = l.search_id
+		 FROM feed_items f JOIN listings l ON l.id = f.listing_id
 		 WHERE `+where+`
-		 ORDER BY l.first_seen DESC, l.id ASC
+		 ORDER BY f.first_seen DESC, f.listing_id ASC
 		 LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -626,6 +836,18 @@ func (s *Store) ListingsPage(ctx context.Context, userID int64, filter string, s
 	defer rows.Close()
 	listings, err := scanListings(rows)
 	return listings, total, err
+}
+
+func (s *Store) SetListingHidden(ctx context.Context, userID int64, src, externalID string, hidden bool) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE listings SET hidden = ?
+		 WHERE source = ? AND external_id = ?
+		   AND search_id IN (SELECT id FROM searches WHERE user_id = ?)`,
+		boolToInt(hidden), src, externalID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *Store) excludedFeedCategories(ctx context.Context, userID int64) map[string][]string {

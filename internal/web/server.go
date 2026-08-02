@@ -138,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /searches/{id}/run", b(http.HandlerFunc(s.handleRun)))
 	mux.Handle("POST /image_search", b(http.HandlerFunc(s.handleImageSearch)))
 	mux.Handle("POST /searches/image", b(http.HandlerFunc(s.handleCreateImageSearch)))
+	mux.Handle("POST /listings/hide", b(http.HandlerFunc(s.handleHideListing)))
 	mux.Handle("POST /monitors", b(http.HandlerFunc(s.handleAddMonitor)))
 	mux.Handle("POST /monitors/{id}/update", b(http.HandlerFunc(s.handleUpdateMonitor)))
 	mux.Handle("POST /monitors/{id}/delete", b(http.HandlerFunc(s.handleDeleteMonitor)))
@@ -362,6 +363,8 @@ type stateData struct {
 	ListingsTotal int             `json:"listingsTotal"`
 	ListingsPage  int             `json:"listingsPage"`
 	ListingsPages int             `json:"listingsPages"`
+	Hidden        []listingView   `json:"hidden,omitempty"`
+	HiddenTotal   int             `json:"hiddenTotal"`
 	Monitors      []monitorView   `json:"monitors"`
 	Settings      settingsView    `json:"settings"`
 	Me            meView          `json:"me"`
@@ -425,6 +428,17 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var hiddenViews []listingView
+	hiddenTotal := 0
+	if r.URL.Query().Get("hidden") == "1" {
+		if list, total, err := s.store.HiddenListingsPage(r.Context(), userID, pageSize, 0); err == nil {
+			hiddenViews = s.listingViews(list, target)
+			hiddenTotal = total
+		}
+	} else if _, total, err := s.store.HiddenListingsPage(r.Context(), userID, 1, 0); err == nil {
+		hiddenTotal = total
+	}
+
 	monitors, err := s.monitorViews(r.Context(), userID, target)
 	if err != nil {
 		s.fail(w, "list monitors", err)
@@ -451,6 +465,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	out := stateData{
 		Searches: searches, Listings: s.listingViews(listings, target),
 		ListingsTotal: total, ListingsPage: page, ListingsPages: pages,
+		Hidden: hiddenViews, HiddenTotal: hiddenTotal,
 		Monitors: monitors, Me: me, Users: users, Settings: settingsView{
 			Currency:        settings.Currency,
 			SearchInterval:  durStr(settings.SearchInterval),
@@ -569,6 +584,30 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 const imageProxyUA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+func (s *Server) handleHideListing(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, errBadForm.Error(), http.StatusBadRequest)
+		return
+	}
+	src := strings.TrimSpace(r.FormValue("source"))
+	externalID := strings.TrimSpace(r.FormValue("external_id"))
+	if src == "" || externalID == "" {
+		http.Error(w, "source and external_id are required", http.StatusBadRequest)
+		return
+	}
+	hide := r.FormValue("hidden") != "0"
+	n, err := s.store.SetListingHidden(r.Context(), auth.UserID(r.Context()), src, externalID, hide)
+	if err != nil {
+		s.fail(w, "hide listing", err)
+		return
+	}
+	if n == 0 {
+		http.Error(w, "no such listing", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
 func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 	target, ok := safeImageURL(r.URL.Query().Get("u"))
