@@ -269,6 +269,18 @@ func detectMonitorSource(reg *source.Registry, rawURL string) string {
 		}
 		return ""
 	}
+	if host == "paypayfleamarket.yahoo.co.jp" {
+		if _, ok := reg.Get("paypayfleamarket"); ok {
+			return "paypayfleamarket"
+		}
+		return ""
+	}
+	if host == "auctions.yahoo.co.jp" || strings.HasSuffix(host, ".auctions.yahoo.co.jp") {
+		if _, ok := reg.Get("yahooauctions"); ok {
+			return "yahooauctions"
+		}
+		return ""
+	}
 	hostMatch := map[string]string{
 		"mercari":       "mercari",
 		"fril.jp":       "rakuma",

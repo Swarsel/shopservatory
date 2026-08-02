@@ -1,12 +1,15 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"html"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -15,8 +18,9 @@ import (
 )
 
 type Telegram struct {
-	token string
-	http  *http.Client
+	token  string
+	http   *http.Client
+	images *http.Client
 }
 
 func NewTelegram(token string) *Telegram {
@@ -24,6 +28,36 @@ func NewTelegram(token string) *Telegram {
 		return nil
 	}
 	return &Telegram{token: token, http: &http.Client{Timeout: 15 * time.Second}}
+}
+
+var geoBlockedImageHosts = []string{"yimg.jp", "yahoo.co.jp"}
+
+func geoBlockedImage(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, suffix := range geoBlockedImageHosts {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Telegram) SetImageProxy(proxyURL string) {
+	if proxyURL == "" {
+		return
+	}
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return
+	}
+	t.images = &http.Client{
+		Timeout:   20 * time.Second,
+		Transport: &http.Transport{Proxy: http.ProxyURL(u)},
+	}
 }
 
 func (t *Telegram) Kind() string { return "telegram" }
@@ -37,6 +71,11 @@ func (t *Telegram) Send(ctx context.Context, target store.NotificationTarget, ev
 	caption := t.format(ev)
 
 	if ev.Listing.ImageURL != "" {
+		if t.images != nil && geoBlockedImage(ev.Listing.ImageURL) {
+			if err := t.uploadPhoto(ctx, chatID, ev.Listing.ImageURL, caption); err == nil {
+				return nil
+			}
+		}
 		if err := t.call(ctx, "sendPhoto", url.Values{
 			"chat_id":    {chatID},
 			"photo":      {ev.Listing.ImageURL},
@@ -106,6 +145,85 @@ func auctionTimeLeft(ends string, now time.Time) string {
 	default:
 		return fmt.Sprintf("ends in %dm", mins)
 	}
+}
+
+func (t *Telegram) uploadPhoto(ctx context.Context, chatID, imageURL, caption string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", telegramImageUA)
+	req.Header.Set("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
+	if u, uErr := url.Parse(imageURL); uErr == nil {
+		req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
+	}
+	resp, err := t.images.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("telegram: fetch image: status %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
+		return fmt.Errorf("telegram: fetch image: content-type %q", ct)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("telegram: fetch image: empty body")
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("chat_id", chatID)
+	_ = mw.WriteField("caption", caption)
+	_ = mw.WriteField("parse_mode", "HTML")
+	part, err := mw.CreateFormFile("photo", photoFilename(imageURL))
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", t.token)
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return err
+	}
+	upReq.Header.Set("Content-Type", mw.FormDataContentType())
+	upResp, err := t.http.Do(upReq)
+	if err != nil {
+		return err
+	}
+	defer upResp.Body.Close()
+	if upResp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(upResp.Body, 1<<16))
+		return fmt.Errorf("telegram sendPhoto upload: %s: %s", upResp.Status, string(raw))
+	}
+	return nil
+}
+
+const telegramImageUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+func photoFilename(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		if base := path.Base(u.Path); base != "" && base != "/" && base != "." {
+			if i := strings.IndexByte(base, '?'); i >= 0 {
+				base = base[:i]
+			}
+			if strings.Contains(base, ".") {
+				return base
+			}
+		}
+	}
+	return "photo.jpg"
 }
 
 func (t *Telegram) call(ctx context.Context, method string, form url.Values) error {

@@ -113,6 +113,9 @@ func run() error {
 	log.Info("currency conversion ready", "default_target", conv.DefaultTarget())
 
 	tg := notify.NewTelegram(cfg.Telegram.Token)
+	if tg != nil {
+		tg.SetImageProxy(cfg.Scrape.JPProxyURL)
+	}
 	notifier := notify.NewManager(log, conv, tg)
 	if !cfg.Telegram.Enabled() {
 		log.Warn("Telegram disabled: no bot token configured (dashboard feed still works)")

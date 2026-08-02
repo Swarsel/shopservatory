@@ -45,6 +45,17 @@ func (y *yahooAuctions) Search(ctx context.Context, spec SearchSpec) ([]Listing,
 
 var errYahooNoItems = errors.New("yahooauctions(direct): no items in response")
 
+var errYahooNeedsJP = errors.New("yahooauctions: this item needs the Japan proxy (scrape.jp_proxy_url)")
+
+func yahooNativeURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "auctions.yahoo.co.jp" || strings.HasSuffix(host, ".auctions.yahoo.co.jp")
+}
+
 func (y *yahooAuctions) searchDirect(ctx context.Context, spec SearchSpec) ([]Listing, error) {
 	q := url.Values{}
 	q.Set("p", spec.Query)
@@ -207,10 +218,19 @@ func (y *yahooAuctions) EnrichListing(ctx context.Context, externalID string) (f
 }
 
 func (y *yahooAuctions) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
-	body, status, err := y.client.Fetch(ctx, rawURL, map[string]string{
+	client := y.client
+	headers := map[string]string{
 		"Accept":          "text/html,application/xhtml+xml",
 		"Accept-Language": "en,ja;q=0.8",
-	})
+	}
+	if yahooNativeURL(rawURL) {
+		if y.jp == nil {
+			return ItemSnapshot{}, errYahooNeedsJP
+		}
+		client = y.jp
+		headers["Accept-Language"] = "ja-JP,ja;q=0.9"
+	}
+	body, status, err := client.Fetch(ctx, rawURL, headers)
 	if err != nil {
 		return ItemSnapshot{}, err
 	}

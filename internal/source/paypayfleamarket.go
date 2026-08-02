@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -158,6 +159,14 @@ func parsePayPayTime(v string) time.Time {
 }
 
 func (p *payPayFleaMarket) Snapshot(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	if p.jp != nil {
+		if snap, err := p.snapshotDirect(ctx, rawURL); err == nil {
+			return snap, nil
+		} else if p.log != nil {
+			p.log.Warn("paypayfleamarket: direct snapshot failed, falling back to buyee", "err", err)
+		}
+	}
+
 	html, err := p.client.RenderHTML(ctx, rawURL, browser.RenderOptions{SettleDelay: 3 * time.Second})
 	if err != nil {
 		return ItemSnapshot{}, fmt.Errorf("paypayfleamarket: fetch: %w", err)
@@ -189,6 +198,58 @@ func payPaySnapshotFromDoc(doc *goquery.Document, rawURL string) (ItemSnapshot, 
 	}
 	img := doc.Find(".flexslider li[data-thumb]").First().AttrOr("data-thumb", "")
 	return ItemSnapshot{Title: collapseSpaces(name.Text()), Price: price, Currency: "JPY", ImageURL: img, Status: status}, nil
+}
+
+func (p *payPayFleaMarket) snapshotDirect(ctx context.Context, rawURL string) (ItemSnapshot, error) {
+	id := payPayItemID(rawURL)
+	if id == "" {
+		return ItemSnapshot{}, fmt.Errorf("paypayfleamarket(direct): no item id in %q", rawURL)
+	}
+	body, err := p.jp.GetBody(ctx, "https://paypayfleamarket.yahoo.co.jp/item/"+id, map[string]string{
+		"Accept":          "text/html,application/xhtml+xml",
+		"Accept-Language": "ja-JP,ja;q=0.9",
+	})
+	if err != nil {
+		return ItemSnapshot{}, fmt.Errorf("paypayfleamarket(direct): fetch: %w", err)
+	}
+	snap, ok := snapshotFromLDJSON(body)
+	if !ok || snap.Price <= 0 {
+		return ItemSnapshot{}, fmt.Errorf("paypayfleamarket(direct): no usable ld+json for %s", id)
+	}
+	if st, ok := payPayNextStatus(body); ok {
+		snap.Status = st
+	}
+	return snap, nil
+}
+
+var payPayItemPath = regexp.MustCompile(`/item/([A-Za-z0-9]+)`)
+
+func payPayItemID(rawURL string) string {
+	m := payPayItemPath.FindStringSubmatch(rawURL)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+var payPayStatusJSON = regexp.MustCompile(`"status"\s*:\s*"(SOLD|OPEN|SOLD_OUT|STOP|DELETED)"`)
+
+func payPayNextStatus(body []byte) (string, bool) {
+	m := payPayStatusJSON.FindSubmatch(body)
+	if m == nil {
+		return "", false
+	}
+	switch string(m[1]) {
+	case "SOLD", "SOLD_OUT":
+		return "sold", true
+	case "DELETED":
+		return "removed", true
+	case "STOP":
+		return "sold", true
+	case "OPEN":
+		return "active", true
+	}
+	return "", false
 }
 
 func (p *payPayFleaMarket) searchBuyee(ctx context.Context, spec SearchSpec) ([]Listing, error) {

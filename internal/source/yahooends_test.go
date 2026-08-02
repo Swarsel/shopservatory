@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -123,5 +124,55 @@ func TestYahooEnrichListingRejectsBlankID(t *testing.T) {
 	y := newYahooAuctions(nil, &Client{}, quietLog())
 	if _, _, _, ok := y.EnrichListing(context.Background(), ""); ok {
 		t.Fatal("a blank external id must not be fetched")
+	}
+}
+
+func TestYahooNativeURLDetection(t *testing.T) {
+	for _, u := range []string{
+		"https://auctions.yahoo.co.jp/jp/auction/1238998047",
+		"https://page.auctions.yahoo.co.jp/jp/auction/e1",
+	} {
+		if !yahooNativeURL(u) {
+			t.Errorf("%q should be treated as a native yahoo url", u)
+		}
+	}
+	for _, u := range []string{
+		"https://zenmarket.jp/en/yahoo.aspx?itemCode=x",
+		"https://auctions.yahoo.co.jp.evil.com/jp/auction/1",
+		"::::",
+	} {
+		if yahooNativeURL(u) {
+			t.Errorf("%q must not be treated as native", u)
+		}
+	}
+}
+
+func TestYahooSnapshotNativeNeedsJPClient(t *testing.T) {
+	y := newYahooAuctions(&Client{}, nil, quietLog())
+	_, err := y.Snapshot(context.Background(), "https://auctions.yahoo.co.jp/jp/auction/1238998047")
+	if err == nil {
+		t.Fatal("without the Japan proxy a native url must report a clear error")
+	}
+	if !errors.Is(err, errYahooNeedsJP) {
+		t.Errorf("err = %v, want errYahooNeedsJP", err)
+	}
+}
+
+func TestYahooSnapshotNativeUsesJPClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(yahooItemHTML))
+	}))
+	defer srv.Close()
+
+	y := newYahooAuctions(nil, clientTo(t, srv.URL), quietLog())
+	snap, err := y.Snapshot(context.Background(), "https://auctions.yahoo.co.jp/jp/auction/e1237529816")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Price != 770000 || snap.SaleType != "auction" {
+		t.Errorf("unexpected snapshot: %+v", snap)
+	}
+	if snap.EndsAt.UTC().Format(time.RFC3339) != "2026-08-08T07:00:52Z" {
+		t.Errorf("endsAt = %s", snap.EndsAt)
 	}
 }
